@@ -8,11 +8,14 @@ local batch_size = 8;
       "type": "transformer_squad",
       "transformer_model_name": transformer_model,
       "skip_invalid_examples": true,
-      //"max_instances": 200  // debug setting
+      "max_instances": 200  // debug setting
   },
   "validation_dataset_reader": self.dataset_reader + {
       "skip_invalid_examples": false,
   },
+  //"train_data_path": std.extVar("SQUAD_TRAIN"),
+  //"validation_data_path": std.extVar("SQUAD_DEV"),
+  // You can replace the above two lines with these to get the actual squad datasets.
   "train_data_path": "https://allennlp.s3.amazonaws.com/datasets/squad/squad-train-v1.1.json",
   "validation_data_path": "https://allennlp.s3.amazonaws.com/datasets/squad/squad-dev-v1.1.json",
   "model": {
@@ -40,7 +43,7 @@ local batch_size = 8;
     },
     "grad_clipping": 1.0,
     "num_epochs": epochs,
-    "cuda_device": -1
+    "cuda_device": 0,
   },
   "random_seed": 42,
   "numpy_seed": 42,

@@ -7,7 +7,7 @@ local epochs = 3;
       "type": "transformer_squad",
       "transformer_model_name": transformer_model,
       "skip_invalid_examples": true,
-      //"max_instances": 200  // debug setting
+      "max_instances": 200  // debug setting
   },
   "validation_dataset_reader": self.dataset_reader + {
       "skip_invalid_examples": false,
