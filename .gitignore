@@ -41,4 +41,12 @@ __pycache__
 
 .coverage
 .pytest_cache/
+debug.py
+tst
+bad_case.txt
+
+# to be removed
+allennlp_models/rc/nq/
+
+
 
