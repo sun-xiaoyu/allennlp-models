@@ -68,8 +68,11 @@ class BertJointNQ(Model):
         self._span_accuracy = BooleanAccuracy()
         self._ans_type_accuracy = CategoricalAccuracy()
         self._per_instance_metrics = SquadEmAndF1()
-        with open(vocab_len_location, 'r') as f:
-            vocab_len = int(f.read())
+        if str(vocab_len_location).isdigit():
+            vocab_len = int(vocab_len_location)
+        else:
+            with open(vocab_len_location, 'r') as f:
+                vocab_len = int(f.read())
         self._text_field_embedder._token_embedders['tokens'].transformer_model.resize_token_embeddings(vocab_len)
         logger.info(f'Model embedding matrix resized to length: {vocab_len}')
         logger.info('yeah' * 20)
@@ -155,6 +158,11 @@ class BertJointNQ(Model):
         possible_answer_mask = torch.zeros_like(
             get_token_ids_from_text_field_tensors(question_with_context), dtype=torch.bool
         )
+
+        # here we use mask:
+        # we replace all logits whose position are now within the context_span with 0
+        # that way, there is no possibility that answer fall in the [cls][question tokens][sep] part
+
         for i, (start, end) in enumerate(context_span):
             possible_answer_mask[i, start : end + 1] = True
 
@@ -163,9 +171,6 @@ class BertJointNQ(Model):
         )
         span_end_logits = util.replace_masked_values(span_end_logits, possible_answer_mask, -1e32)
 
-        # here we use mask:
-        # we replace all logits whose position are now within the context_span with 0
-        # that way, there is no possibility that answer fall in the [cls][question tokens][sep] part
         span_start_probs = torch.nn.functional.softmax(span_start_logits, dim=-1)
         span_end_probs = torch.nn.functional.softmax(span_end_logits, dim=-1)
         best_spans = get_best_span(span_start_logits, span_end_logits)
@@ -234,80 +239,88 @@ class BertJointNQ(Model):
         # Compute the EM and F1 on SQuAD and add the tokenized input to the output.
         if metadata is not None:
             best_spans = best_spans.detach().cpu().numpy()
-
+            answer_type_preds = output_dict['answer_type_pred'].detach().cpu().numpy()
             output_dict["best_span_str"] = []
             output_dict["best_span_orig"] = []
-            context_tokens = []
+            output_dict['answer_text_gold'] = []
             for i, (metadata_entry, best_span) in enumerate(zip(metadata, best_spans)):
-                context_tokens_for_question = metadata_entry["context_tokens"]
-                context_tokens.append(context_tokens_for_question)
+                window_context_wordpiece_tokens = metadata_entry["window_context_wordpiece_tokens"]
 
-                # 注释 we remove the offsets and only focus on the context part
-                best_span -= 1 + len(metadata_entry["question_tokens"]) + 2
+                best_span -= metadata_entry['start_of_context']
                 assert np.all(best_span >= 0)
 
                 predicted_start, predicted_end = tuple(best_span)
+                orig_start_token = window_context_wordpiece_tokens[predicted_start].idx
+                orig_end_token = window_context_wordpiece_tokens[predicted_end].idx
                 # 下面这一段好像意思是，如果预测到的点在一个词的中间，那么这个对应的token应该idx是none，
                 # 如果是答案开始，我们往前找到第一个有index的，如果是答案结束我们往后找第一个有index的
-                while (
-                    predicted_start >= 0
-                    and context_tokens_for_question[predicted_start].idx is None
-                ):
-                    predicted_start -= 1
-                if predicted_start < 0:
-                    logger.warning(
-                        f"Could not map the token '{context_tokens_for_question[best_span[0]].text}' at index "
-                        f"'{best_span[0]}' to an offset in the original text."
-                    )
-                    orig_start_token = 0
-                else:
-                    orig_start_token = context_tokens_for_question[predicted_start].idx
+                # while (
+                #     predicted_start >= 0
+                #     and context_tokens_for_question[predicted_start].idx is None
+                # ):
+                #     predicted_start -= 1
+                # if predicted_start < 0:
+                #     logger.warning(
+                #         f"Could not map the token '{window_context_wordpiece_tokens[best_span[0]].text}' at index "
+                #         f"'{best_span[0]}' to an offset in the original text."
+                #     )
+                #     orig_start_token = 0
+                # else:
+                #     orig_start_token = window_context_wordpiece_tokens[predicted_start].idx
 
-                while (
-                    predicted_end < len(context_tokens_for_question)
-                    and context_tokens_for_question[predicted_end].idx is None
-                ):
-                    predicted_end += 1
-                if predicted_end >= len(context_tokens_for_question):
-                    logger.warning(
-                        f"Could not map the token '{context_tokens_for_question[best_span[1]].text}' at index "
-                        f"'{best_span[1]}' to an offset in the original text."
-                    )
-                    orig_end_token = len(metadata_entry["context"])
-                else:
-                    end_token = context_tokens_for_question[predicted_end]
-                    orig_end_token = end_token.idx + len(sanitize_wordpiece(end_token.text))
+                # while (
+                #     predicted_end < len(context_tokens_for_question)
+                #     and context_tokens_for_question[predicted_end].idx is None
+                # ):
+                #     predicted_end += 1
+                # if predicted_end >= len(window_context_wordpiece_tokens):
+                #     logger.warning(
+                #         f"Could not map the token '{window_context_wordpiece_tokens[best_span[1]].text}' at index "
+                #         f"'{best_span[1]}' to an offset in the original text."
+                #     )
+                #     orig_end_token = len(metadata_entry["context"])
+                # else:
+                #     orig_end_token = window_context_wordpiece_tokens[predicted_end].idx
 
                 # TODO 那么问题来了，我为什么要改下面这行呢？我为什么之前要改 best_span_string 的计算方式呢
                 # 下面两行，第一行是20年11月发现的问题，当时没改。第二行是21年2月改过来的
-                # best_span_string = ' '.join(metadata_entry["context"].split(' ')[orig_start_token:orig_end_token])
-                best_span_string = metadata_entry["context"][orig_start_token:orig_end_token]
+                best_span_string = ' '.join(metadata_entry["context"].split(' ')[orig_start_token:orig_end_token+1])
+                    # best_span_string = metadata_entry["context"][orig_start_token:orig_end_token]
+
+                answer_text = metadata_entry.get("answer_text")
+                if len(answer_text) > 0:
+                    self._per_instance_metrics(best_span_string, answer_text)
+                # TODO 问题出在上面这一行。和原来的 model 文件相比，best_span_string的计算方法变了，所以实际传进去的东西不一样。
+
                 output_dict["best_span_str"].append(best_span_string)
                 output_dict["best_span_orig"].append((orig_start_token, orig_end_token))
-
-                answers = metadata_entry.get("answers")
-                if len(answers) > 0:
-                    self._per_instance_metrics(best_span_string, answers)
-                # TODO 问题出在上面这一行。和原来的 model 文件相比，best_span_string的计算方法变了，所以实际传进去的东西不一样。
-                answer_type_pred = output_dict['answer_type_pred'][i]
-                # if answer_type_pred != answer_type[i] or answer_type_pred != 0 and best_span_string != answers:
-                #     # if random.random() < 0.05:
-                #         print(metadata_entry['id'])
-                #         print(metadata_entry['doc_url'])
-                #         print('-' * 50)
-                #         # print(metadata_entry['name'])
-                #         print('Q:', metadata_entry['question'])
-                #         print('-' * 50)
-                #         print('Prediction', answer_type_pred)
-                #         print('~~~', best_span_string)
-                #         print('-'*30)
-                #         print('Gold:', answer_type[i])
-                #         print('~~~', answers)
-                #         # print(metadata_entry['context'])
-                #         print('='*70)
-                #         print('')
-                #         print('')
-            output_dict["context_tokens"] = context_tokens
+                output_dict['answer_text_gold'].append(answer_text)
+                display_bad_case = False
+                if display_bad_case:
+                    answer_type_pred = answer_type_preds[i]
+                    answer_type_idx = metadata_entry['answer_type_idx']
+                    # if answer_type_pred != answer_type_idx or answer_type_pred != 0 and best_span_string != answer_text:
+                    if best_span_string != answer_text and answer_type_idx != 0:
+                        # if random.random() < 0.05:
+                            print(metadata_entry['id'])
+                            print(metadata_entry['doc_url'])
+                            print('-' * 50)
+                            print('Q:', metadata_entry['question'])
+                            print('-' * 50)
+                            print('Prediction', answer_type_pred, orig_start_token, orig_end_token)
+                            print(best_span)
+                            print('~~~', best_span_string)
+                            print('-'*30)
+                            print('Gold:', answer_type_idx)
+                            print('~~~', answer_text)
+                            # for i in range(10):
+                            #     print(context_tokens_for_question[i])
+                            # print(context_tokens_for_question)
+                            # print(metadata_entry['qwc'])
+                            # print(metadata_entry['context'])
+                            print('='*70)
+                            print('')
+                            print('')
 
         return output_dict
 
