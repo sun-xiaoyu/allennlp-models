@@ -1047,7 +1047,7 @@ class BertJointNQReaderSimple(DatasetReader):
             # 以上对计算 em-f1 有用。以下用于 debug
             "answer_type_idx": answer_type_idx,
             "question": question,
-            "answers_obj": answers,
+            "answers": answers,
             # "qwc": qwc
         }
         # TODO add doc url & ID

@@ -142,6 +142,7 @@ class BertJointNQ(Model):
         # print(question_with_context['tokens']['type_ids'].shape)
         # print('\n\n')
         # pickle.dump(question_with_context['tokens']['token_ids'], open('/home/sunxy-s18/data/bad_tensor','wb'))
+        logger.debug(f'Batch size: {context_span.size()[0]}')
         embedded_question = self._text_field_embedder(question_with_context) # TODO ERROR HERE
         # print("embedded_question", embedded_question.shape)
         # raise Exception('unacceptable!')
@@ -246,6 +247,7 @@ class BertJointNQ(Model):
             for i, (metadata_entry, best_span) in enumerate(zip(metadata, best_spans)):
                 window_context_wordpiece_tokens = metadata_entry["window_context_wordpiece_tokens"]
 
+                # 注释 we remove the offsets and only focus on the context part
                 best_span -= metadata_entry['start_of_context']
                 assert np.all(best_span >= 0)
 
@@ -289,13 +291,14 @@ class BertJointNQ(Model):
 
                 answer_text = metadata_entry.get("answer_text")
                 if len(answer_text) > 0:
-                    self._per_instance_metrics(best_span_string, answer_text)
+                    self._per_instance_metrics(best_span_string, [answer_text])
                 # TODO 问题出在上面这一行。和原来的 model 文件相比，best_span_string的计算方法变了，所以实际传进去的东西不一样。
 
                 output_dict["best_span_str"].append(best_span_string)
                 output_dict["best_span_orig"].append((orig_start_token, orig_end_token))
                 output_dict['answer_text_gold'].append(answer_text)
                 display_bad_case = False
+                # display_bad_case = True
                 if display_bad_case:
                     answer_type_pred = answer_type_preds[i]
                     answer_type_idx = metadata_entry['answer_type_idx']

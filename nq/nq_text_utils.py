@@ -147,10 +147,11 @@ def simplify_nq_example(nq_example):
 if __name__ == '__main__':
     # from m to n [m,n], inclusive on both ends
     m = 0
-    n = 49
-    with open(f"/home/sunxy-s18/data/nq/nq_dev_{m}_{n}.jsonl", 'w', encoding='utf-8') as fout:
+    n = 7829
+    # with open(f"/home/sunxy-s18/data/nq/entries_dev_{m}_{n}.jsonl", 'w', encoding='utf-8') as fout:
+    with open(f"/home/sunxy-s18/data/nq/simplified_nq_dev_{m}_{n}.jsonl", 'w') as fout:
         with open("/home/sunxy-s18/data/nq/v1.0-simplified_nq-dev-all.jsonl", 'r') as fin:
-        # with open("/home/sunxy-s18/data/nq/simplified_nq_dev_all_7830.jsonl", 'r') as fin:
+        # with open("/home/sunxy-s18/data/nq/entries_dev_0_7829.jsonl", 'r') as fin:
             for i, line in enumerate(tqdm.tqdm(fin)):
                 # js = json.loads(line)
                 # js = simplify_nq_example(js)
@@ -169,9 +170,9 @@ if __name__ == '__main__':
                 # simplified_js = simplify_nq_example(js)
                 # print(simplified_js['document_title'] if 'document_title' in simplified_js else '?')
                 if i >= m:
+                    # js = json.loads(line)
+                    # simplified_js = simplify_nq_example(js)
+                    # fout.write(json.dumps(simplified_js, ensure_ascii=False) + '\n')
                     fout.write(line)
                 if i == n:
                     break
-                # simplified_js = simplify_nq_example(js)
-                # fout.write(json.dumps(simplified_js, ensure_ascii=False)+'\n')
-                # break
