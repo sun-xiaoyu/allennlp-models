@@ -1,5 +1,5 @@
 import json
-import logging,random
+import logging, random
 import gzip
 import json
 import enum
@@ -19,285 +19,292 @@ from allennlp.data.token_indexers import PretrainedTransformerIndexer
 from allennlp.data.tokenizers import Token, PretrainedTransformerTokenizer
 
 from nq.utils import char_span_to_token_span
+
 # from allennlp_models.rc.common.reader_utils import char_span_to_token_span
 # from nq import BertJointNQReaderSimple
 
 logger = logging.getLogger(__name__)
 
+
 class Flag:
     def __init__(self):
         self.mode = 'all_examples'
-        self.skip_nested_contexts=True
+        self.skip_nested_contexts = True
         self.max_contexts = 48
         self.max_position = 50
         # self.max_instances = 100000
+
+
 FLAGS = Flag()
 
+
 class AnswerType(enum.IntEnum):
-  """Type of NQ answer."""
-  UNKNOWN = 0
-  SHORT = 1
-  LONG = 2
-  YES = 3
-  NO = 4
+    """Type of NQ answer."""
+    UNKNOWN = 0
+    SHORT = 1
+    LONG = 2
+    YES = 3
+    NO = 4
+
 
 def make_nq_answer(input_text) -> AnswerType:
-  """Makes an Answer object following NQ conventions.
+    """Makes an Answer object following NQ conventions.
 
-  Args:
+    Args:
     contexts: string containing the context
     answer: dictionary with `span_start` and `input_text` fields
 
-  Returns:
+    Returns:
     an Answer object. If the Answer type is YES or NO or LONG, the text
     of the answer is the long answer. If the answer type is UNKNOWN, the text of
     the answer is empty.
-  """
+    """
 
-  if input_text.lower() == "short":
-    answer_type = AnswerType.SHORT
-  elif input_text.lower() == "yes":
-    answer_type = AnswerType.YES
-  elif input_text.lower() == "no":
-    answer_type = AnswerType.NO
-  elif input_text.lower() == "long":
-    answer_type = AnswerType.LONG
-  else:
-    answer_type = AnswerType.UNKNOWN
+    if input_text.lower() == "short":
+        answer_type = AnswerType.SHORT
+    elif input_text.lower() == "yes":
+        answer_type = AnswerType.YES
+    elif input_text.lower() == "no":
+        answer_type = AnswerType.NO
+    elif input_text.lower() == "long":
+        answer_type = AnswerType.LONG
+    else:
+        answer_type = AnswerType.UNKNOWN
 
-  return answer_type
+    return answer_type
+
 
 def has_long_answer(a):
-  return (a["long_answer"]["start_token"] >= 0 and
-          a["long_answer"]["end_token"] >= 0)
+    return (a["long_answer"]["start_token"] >= 0 and
+            a["long_answer"]["end_token"] >= 0)
 
 
 def should_skip_context(e, idx):
-  if (FLAGS.skip_nested_contexts and
-      not e["long_answer_candidates"][idx]["top_level"]):
-    return True
-  elif not get_candidate_text(e, idx).text.strip():
-    # Skip empty contexts.
-    return True
-  else:
-    return False
+    if (FLAGS.skip_nested_contexts and
+            not e["long_answer_candidates"][idx]["top_level"]):
+        return True
+    elif not get_candidate_text(e, idx).text.strip():
+        # Skip empty contexts.
+        return True
+    else:
+        return False
 
 
 def get_first_annotation(e):
-  """Returns the first short or long answer in the example.
+    """Returns the first short or long answer in the example.
 
-  Args:
+    Args:
     e: (dict) annotated example.
 
-  Returns:
+    Returns:
     annotation: (dict) selected annotation
     annotated_idx: (int) index of the first annotated candidate.
     annotated_sa: (tuple) char offset of the start and end token
         of the short answer. The end token is exclusive.
-  """
-  positive_annotations = sorted(
-      [a for a in e["annotations"] if has_long_answer(a)],
-      key=lambda a: a["long_answer"]["candidate_index"])
+    """
+    positive_annotations = sorted(
+        [a for a in e["annotations"] if has_long_answer(a)],
+        key=lambda a: a["long_answer"]["candidate_index"])
 
-  for a in positive_annotations:
-    if a["short_answers"]:
-      idx = a["long_answer"]["candidate_index"]
-      start_token = a["short_answers"][0]["start_token"]
-      end_token = a["short_answers"][-1]["end_token"]
-      return a, idx, (token_to_char_offset(e, idx, start_token),
-                      token_to_char_offset(e, idx, end_token) - 1)
+    for a in positive_annotations:
+        if a["short_answers"]:
+            idx = a["long_answer"]["candidate_index"]
+            start_token = a["short_answers"][0]["start_token"]
+            end_token = a["short_answers"][-1]["end_token"]
+            return a, idx, (token_to_char_offset(e, idx, start_token),
+                            token_to_char_offset(e, idx, end_token) - 1)
 
-  for a in positive_annotations:
-    idx = a["long_answer"]["candidate_index"]
-    return a, idx, (-1, -1)
+    for a in positive_annotations:
+        idx = a["long_answer"]["candidate_index"]
+        return a, idx, (-1, -1)
 
-  return None, -1, (-1, -1)
+    return None, -1, (-1, -1)
 
 
 def get_text_span(example, span):
-  """Returns the text in the example's document in the given token span."""
-  token_positions = []
-  tokens = []
-  for i in range(span["start_token"], span["end_token"]):
-    t = example["document_tokens"][i]
-    if not t["html_token"]:
-      token_positions.append(i)
-      token = t["token"].replace(" ", "")
-      tokens.append(token)
-  return TextSpan(token_positions, " ".join(tokens))
+    """Returns the text in the example's document in the given token span."""
+    token_positions = []
+    tokens = []
+    for i in range(span["start_token"], span["end_token"]):
+        t = example["document_tokens"][i]
+        if not t["html_token"]:
+            token_positions.append(i)
+            token = t["token"].replace(" ", "")
+            tokens.append(token)
+    return TextSpan(token_positions, " ".join(tokens))
 
 
 def token_to_char_offset(e, candidate_idx, token_idx):
-  """Converts a token index to the char offset !within! the candidate."""
-  c = e["long_answer_candidates"][candidate_idx]
-  char_offset = 0
-  for i in range(c["start_token"], token_idx):
-    t = e["document_tokens"][i]
-    if not t["html_token"]:
-      token = t["token"].replace(" ", "")
-      char_offset += len(token) + 1
-  return char_offset
+    """Converts a token index to the char offset !within! the candidate."""
+    c = e["long_answer_candidates"][candidate_idx]
+    char_offset = 0
+    for i in range(c["start_token"], token_idx):
+        t = e["document_tokens"][i]
+        if not t["html_token"]:
+            token = t["token"].replace(" ", "")
+            char_offset += len(token) + 1
+    return char_offset
 
 
 def get_candidate_type(e, idx):
-  """Returns the candidate's type: Table, Paragraph, List or Other."""
-  c = e["long_answer_candidates"][idx]
-  first_token = e["document_tokens"][c["start_token"]]["token"]
-  if first_token == "<Table>":
-    return "Table"
-  elif first_token == "<P>":
-    return "Paragraph"
-  elif first_token in ("<Ul>", "<Dl>", "<Ol>"):
-    return "List"
-  elif first_token in ("<Tr>", "<Li>", "<Dd>", "<Dt>"):
-    return "Other"
-  else:
-    logger.warning("Unknown candidate type found: %s", first_token)
-    return "Other"
+    """Returns the candidate's type: Table, Paragraph, List or Other."""
+    c = e["long_answer_candidates"][idx]
+    first_token = e["document_tokens"][c["start_token"]]["token"]
+    if first_token == "<Table>":
+        return "Table"
+    elif first_token == "<P>":
+        return "Paragraph"
+    elif first_token in ("<Ul>", "<Dl>", "<Ol>"):
+        return "List"
+    elif first_token in ("<Tr>", "<Li>", "<Dd>", "<Dt>"):
+        return "Other"
+    else:
+        logger.warning("Unknown candidate type found: %s", first_token)
+        return "Other"
 
 
 def add_candidate_types_and_positions(e):
-  """Adds type and position info to each candidate in the document."""
-  counts = collections.defaultdict(int)
-  for idx, c in candidates_iter(e):
-    context_type = get_candidate_type(e, idx)
-    if counts[context_type] < FLAGS.max_position:
-      counts[context_type] += 1
-    c["type_and_position"] = "[%s=%d]" % (context_type, counts[context_type])
-    #   TODO
-    #   not change here!
-    # c["type_and_position"] = "[%s]" % context_type
+    """Adds type and position info to each candidate in the document."""
+    counts = collections.defaultdict(int)
+    for idx, c in candidates_iter(e):
+        context_type = get_candidate_type(e, idx)
+        if counts[context_type] < FLAGS.max_position:
+            counts[context_type] += 1
+        c["type_and_position"] = "[%s=%d]" % (context_type, counts[context_type])
+        #   TODO
+        #   not change here!
+        # c["type_and_position"] = "[%s]" % context_type
 
 
 def get_candidate_type_and_position(e, idx):
-  """Returns type and position info for the candidate at the given index."""
-  if idx == -1:
-    return "[NoLongAnswer]"
-  else:
-    return e["long_answer_candidates"][idx]["type_and_position"]
+    """Returns type and position info for the candidate at the given index."""
+    if idx == -1:
+        return "[NoLongAnswer]"
+    else:
+        return e["long_answer_candidates"][idx]["type_and_position"]
 
 
 def get_candidate_text(e, idx):
-  """Returns a text representation of the candidate at the given index."""
-  # No candidate at this index.
-  if idx < 0 or idx >= len(e["long_answer_candidates"]):
-    return TextSpan([], "")
+    """Returns a text representation of the candidate at the given index."""
+    # No candidate at this index.
+    if idx < 0 or idx >= len(e["long_answer_candidates"]):
+        return TextSpan([], "")
 
-  # This returns an actual candidate.
-  return get_text_span(e, e["long_answer_candidates"][idx])
+    # This returns an actual candidate.
+    return get_text_span(e, e["long_answer_candidates"][idx])
 
 
 def candidates_iter(e):
-  """Yield's the candidates that should not be skipped in an example."""
-  for idx, c in enumerate(e["long_answer_candidates"]):
-    if should_skip_context(e, idx):
-      continue
-    yield idx, c
+    """Yield's the candidates that should not be skipped in an example."""
+    for idx, c in enumerate(e["long_answer_candidates"]):
+        if should_skip_context(e, idx):
+            continue
+        yield idx, c
 
 
 def create_example_from_jsonl(line):
-  """Creates an NQ example from a given line of JSON."""
-  e = json.loads(line, object_pairs_hook=collections.OrderedDict)
-  add_candidate_types_and_positions(e)
-  annotation, annotated_idx, annotated_sa = get_first_annotation(e)
+    """Creates an NQ example from a given line of JSON."""
+    e = json.loads(line, object_pairs_hook=collections.OrderedDict)
+    add_candidate_types_and_positions(e)
+    annotation, annotated_idx, annotated_sa = get_first_annotation(e)
 
-  # annotated_idx: index of the first annotated context, -1 if null.
-  # annotated_sa: short answer start and end char offsets, (-1, -1) if null.
-  # important! answer span are character level! not token level.
-  answer = {
-      "candidate_id": annotated_idx,
-      "span_text": "",
-      "span_start": -1,
-      "span_end": -1,
-      "answer_type": "unknown",
-  }
+    # annotated_idx: index of the first annotated context, -1 if null.
+    # annotated_sa: short answer start and end char offsets, (-1, -1) if null.
+    # important! answer span are character level! not token level.
+    answer = {
+        "candidate_id": annotated_idx,
+        "span_text": "",
+        "span_start": -1,
+        "span_end": -1,
+        "answer_type": "unknown",
+    }
 
-  # Yes/no answers are added in the input text.
-  if annotation is not None:
-    assert annotation["yes_no_answer"] in ("YES", "NO", "NONE")
-    if annotation["yes_no_answer"] in ("YES", "NO"):
-      answer["answer_type"] = annotation["yes_no_answer"].lower()
+    # Yes/no answers are added in the input text.
+    if annotation is not None:
+        assert annotation["yes_no_answer"] in ("YES", "NO", "NONE")
+        if annotation["yes_no_answer"] in ("YES", "NO"):
+            answer["answer_type"] = annotation["yes_no_answer"].lower()
 
-  # Add a short answer if one was found.
-  if annotated_sa != (-1, -1):
-    answer["answer_type"] = "short"
-    span_text = get_candidate_text(e, annotated_idx).text
-    answer["span_text"] = span_text[annotated_sa[0]:annotated_sa[1]]
-    answer["span_start"] = annotated_sa[0]
-    answer["span_end"] = annotated_sa[1]
-    expected_answer_text = get_text_span(
-        e, {
-            "start_token": annotation["short_answers"][0]["start_token"],
-            "end_token": annotation["short_answers"][-1]["end_token"],
-        }).text
-    assert expected_answer_text == answer["span_text"], (expected_answer_text,
-                                                         answer["span_text"])
+    # Add a short answer if one was found.
+    if annotated_sa != (-1, -1):
+        answer["answer_type"] = "short"
+        span_text = get_candidate_text(e, annotated_idx).text
+        answer["span_text"] = span_text[annotated_sa[0]:annotated_sa[1]]
+        answer["span_start"] = annotated_sa[0]
+        answer["span_end"] = annotated_sa[1]
+        expected_answer_text = get_text_span(
+            e, {
+                "start_token": annotation["short_answers"][0]["start_token"],
+                "end_token": annotation["short_answers"][-1]["end_token"],
+            }).text
+        assert expected_answer_text == answer["span_text"], (expected_answer_text,
+                                                             answer["span_text"])
 
-  # Add a long answer if one was found.
-  elif annotation and annotation["long_answer"]["candidate_index"] >= 0:
-    answer["span_text"] = get_candidate_text(e, annotated_idx).text
-    answer["span_start"] = 0
-    answer["span_end"] = len(answer["span_text"])
-    answer["answer_type"] = "long"
+    # Add a long answer if one was found.
+    elif annotation and annotation["long_answer"]["candidate_index"] >= 0:
+        answer["span_text"] = get_candidate_text(e, annotated_idx).text
+        answer["span_start"] = 0
+        answer["span_end"] = len(answer["span_text"])
+        answer["answer_type"] = "long"
 
-  # todo  为什么要加这个 -1 context？为什么
-  # 因为为了给没有长答案的加一个 token，好让对应的start,end都指向它
-  context_idxs = [-1]
-  context_list = [{"id": -1, "type": get_candidate_type_and_position(e, -1)}]
-  context_list[-1]["text_map"], context_list[-1]["text"] = (
-      get_candidate_text(e, -1))
-  for idx, _ in candidates_iter(e):
-    context = {"id": idx, "type": get_candidate_type_and_position(e, idx)}
-    context["text_map"], context["text"] = get_candidate_text(e, idx)
-    context_idxs.append(idx)
-    context_list.append(context)
-    if len(context_list) >= FLAGS.max_contexts:
-      break
+    # todo  为什么要加这个 -1 context？为什么
+    # 因为为了给没有长答案的加一个 token，好让对应的start,end都指向它
+    context_idxs = [-1]
+    context_list = [{"id": -1, "type": get_candidate_type_and_position(e, -1)}]
+    context_list[-1]["text_map"], context_list[-1]["text"] = (
+        get_candidate_text(e, -1))
+    for idx, _ in candidates_iter(e):
+        context = {"id": idx, "type": get_candidate_type_and_position(e, idx)}
+        context["text_map"], context["text"] = get_candidate_text(e, idx)
+        context_idxs.append(idx)
+        context_list.append(context)
+        if len(context_list) >= FLAGS.max_contexts:
+            break
 
-  # Assemble example.
-  example = {
-      # "name": e['document_title'] if 'document_title' in e else 'Wikipedia',
-      # the official simplify_nq script does not preserve doc title, that is why we don't use it.
-      "id": str(e["example_id"]),
-      "doc_url": e['document_url'],
-      "question_text": e["question_text"],
-      "answers": [answer],
-      "has_correct_context": annotated_idx in context_idxs  # what is this?
-  }
-  # todo 不has？？
+    # Assemble example.
+    example = {
+        # "name": e['document_title'] if 'document_title' in e else 'Wikipedia',
+        # the official simplify_nq script does not preserve doc title, that is why we don't use it.
+        "id": str(e["example_id"]),
+        "doc_url": e['document_url'],
+        "question_text": e["question_text"],
+        "answers": [answer],
+        "has_correct_context": annotated_idx in context_idxs  # what is this?
+    }
+    # todo 不has？？
 
-  single_map = []
-  single_context = []
-  offset = 0
-  for context in context_list:
-    single_map.extend([-1, -1])
-    single_context.append("[ContextId=%d] %s" %
-                          (context["id"], context["type"]))
-    # TODO change here
-    # single_context.append("[Context] %s" % context["type"])
-    offset += len(single_context[-1]) + 1
-    if context["id"] == annotated_idx:
-      answer["span_start"] += offset
-      answer["span_end"] += offset
+    single_map = []
+    single_context = []
+    offset = 0
+    for context in context_list:
+        single_map.extend([-1, -1])
+        single_context.append("[ContextId=%d] %s" %
+                              (context["id"], context["type"]))
+        # TODO change here
+        # single_context.append("[Context] %s" % context["type"])
+        offset += len(single_context[-1]) + 1
+        if context["id"] == annotated_idx:
+            answer["span_start"] += offset
+            answer["span_end"] += offset
 
-    # Many contexts are empty once the HTML tags have been stripped, so we
-    # want to skip those.
-    if context["text"]:
-      single_map.extend(context["text_map"])
-      single_context.append(context["text"])
-      offset += len(single_context[-1]) + 1
+        # Many contexts are empty once the HTML tags have been stripped, so we
+        # want to skip those.
+        if context["text"]:
+            single_map.extend(context["text_map"])
+            single_context.append(context["text"])
+            offset += len(single_context[-1]) + 1
 
-  example["contexts"] = " ".join(single_context)
-  example["contexts_map"] = single_map
-  if annotated_idx in context_idxs:
-    expected = example["contexts"][answer["span_start"]:answer["span_end"]]
+    example["contexts"] = " ".join(single_context)
+    example["contexts_map"] = single_map
+    if annotated_idx in context_idxs:
+        expected = example["contexts"][answer["span_start"]:answer["span_end"]]
 
-    # This is a sanity check to ensure that the calculated start and end
-    # indices match the reported span text. If this assert fails, it is likely
-    # a bug in the data preparation code above.
-    assert expected == answer["span_text"], (expected, answer["span_text"])
+        # This is a sanity check to ensure that the calculated start and end
+        # indices match the reported span text. If this assert fails, it is likely
+        # a bug in the data preparation code above.
+        assert expected == answer["span_text"], (expected, answer["span_text"])
 
-  return example
+    return example
 
 
 # A special token in NQ is made of non-space chars enclosed in square brackets.
@@ -305,6 +312,7 @@ _SPECIAL_TOKENS_RE = re.compile(r"^\[[^ ]*\]$", re.UNICODE)
 # TODO change here, can be moved into config or add number
 # NQ_SPECIAL_TOKEN = {'bos_token': ['[Table]', '[Paragraph]', '[List]', '[Other]']}
 TextSpan = collections.namedtuple("TextSpan", "token_positions text")
+
 
 @DatasetReader.register("bert_joint_nq")
 class BertJointNQReader(DatasetReader):
@@ -356,17 +364,17 @@ class BertJointNQReader(DatasetReader):
     """
 
     def __init__(
-        self,
-        transformer_model_name: str = "bert-base-cased",
-        length_limit: int = 512,
-        stride: int = 128,
-        max_query_length: int = 64,
-        skip_invalid_examples: bool = False,
-        neg_pos_ratio: int = 1,
-        enable_downsample_strategy=False,
-        downsample_strategy_partition=(0.05, 0.2, 0.75),
-        vocab_len_location="/home/sunxy-s18/data/nq/vocab.len",
-        **kwargs
+            self,
+            transformer_model_name: str = "bert-base-cased",
+            length_limit: int = 512,
+            stride: int = 128,
+            max_query_length: int = 64,
+            skip_invalid_examples: bool = False,
+            neg_pos_ratio: int = 1,
+            enable_downsample_strategy=False,
+            downsample_strategy_partition=(0.05, 0.2, 0.75),
+            vocab_len_location="/home/sunxy-s18/data/nq/vocab.len",
+            **kwargs
     ) -> None:
         super().__init__(**kwargs)
         self._tokenizer = PretrainedTransformerTokenizer(
@@ -435,7 +443,7 @@ class BertJointNQReader(DatasetReader):
         neg_cut = 0
         neg_kept = 0
         pos = 0
-        report_step = max(1, self.max_instances//max(5, len(input_files))) if self.max_instances is not None else 100
+        report_step = max(1, self.max_instances // max(5, len(input_files))) if self.max_instances is not None else 100
         last_report_num = 0
         instances_yielded = 0
         # instance 的数目每过一个 report_step，打印一次 instance 的正负比例
@@ -543,12 +551,12 @@ class BertJointNQReader(DatasetReader):
         # Convert entry to NQExample
 
     def make_instances(
-        self,
-        doc_info: Dict,
-        question: str,
-        answers: List[Dict],
-        context: str,
-        first_answer_offset: Optional[int],
+            self,
+            doc_info: Dict,
+            question: str,
+            answers: List[Dict],
+            context: str,
+            first_answer_offset: Optional[int],
     ) -> Iterable[Instance]:
         # tokenize context by spaces first, and then with the wordpiece tokenizer
         # For RoBERTa, this produces a bug where every token is marked as beginning-of-sentence. To fix it, we
@@ -583,7 +591,6 @@ class BertJointNQReader(DatasetReader):
                     # else:
                     #     tokens.append(tokenizer.wordpiece_tokenizer.unk_token)
 
-
                     # 之前的代码，统一把特殊字符指向了0
                     # new_special_token = Token(token_text, idx=token_start,
                     #                                    # text_id=self._tokenizer.tokenizer.additional_special_tokens_ids,
@@ -602,9 +609,9 @@ class BertJointNQReader(DatasetReader):
                     else:
                         id = self.tokenizer.convert_tokens_to_ids(token_text)
                         special_token = Token(token_text, idx=i,
-                                                  text_id=id,
-                                                  # text_id=1,
-                                                  type_id=self.non_content_type_id)
+                                              text_id=id,
+                                              # text_id=1,
+                                              type_id=self.non_content_type_id)
                         tokenized_context.append(special_token)
 
                 else:
@@ -613,7 +620,7 @@ class BertJointNQReader(DatasetReader):
                             wordpiece.idx += token_start
                         tokenized_context.append(wordpiece)
                 # else:
-                    # tokenized_context.append(Token(token_text, idx=token_start))
+                # tokenized_context.append(Token(token_text, idx=token_start))
                 token_start = i + 1
         # we add the last word
         for wordpiece in tokenize_slice(token_start, len(context)):
@@ -651,20 +658,19 @@ class BertJointNQReader(DatasetReader):
             #     tf.logging.warning("Could not find answer: '%s' vs. '%s'", actual_text,
             #                        cleaned_answer_text)
             #     continue
-            print('==========='*5)
+            print('===========' * 5)
             print(doc_info['id'])
             print(question)
             print(answers)
             print('------------')
             print(context)
-            print('==========='*5)
+            print('===========' * 5)
             print(tokenized_context)
             print([
-                        (t.idx, t.idx + len(sanitize_wordpiece(t.text))) if t.idx is not None else None
-                        for t in tokenized_context
-                    ])
+                (t.idx, t.idx + len(sanitize_wordpiece(t.text))) if t.idx is not None else None
+                for t in tokenized_context
+            ])
             return []
-
 
         # Tokenize the question
         tokenized_question = self._tokenizer.tokenize(question)
@@ -715,14 +721,14 @@ class BertJointNQReader(DatasetReader):
 
     @overrides
     def text_to_instance(
-        self,  # type: ignore
-        question: str,
-        tokenized_question: List[Token],
-        context: str,
-        tokenized_context: List[Token],
-        answers: List[Dict],
-        token_answer_span: Optional[Tuple[int, int]],
-        additional_metadata: Dict[str, Any] = None,
+            self,  # type: ignore
+            question: str,
+            tokenized_question: List[Token],
+            context: str,
+            tokenized_context: List[Token],
+            answers: List[Dict],
+            token_answer_span: Optional[Tuple[int, int]],
+            additional_metadata: Dict[str, Any] = None,
     ) -> Instance:
         fields = {}
 
@@ -741,11 +747,11 @@ class BertJointNQReader(DatasetReader):
 
         question_with_context_field = TextField(
             (
-                [cls_token]
-                + tokenized_question
-                + [sep_token, sep_token]
-                + tokenized_context
-                + [sep_token]
+                    [cls_token]
+                    + tokenized_question
+                    + [sep_token, sep_token]
+                    + tokenized_context
+                    + [sep_token]
             ),
             self._token_indexers,
         )
@@ -794,9 +800,8 @@ class BertJointNQReader(DatasetReader):
         fields["metadata"] = MetadataField(metadata)
         # todo remove below
         # todo why is that?
-        if ans_type =='long' or ans_type == 'short':
+        if ans_type == 'long' or ans_type == 'short':
             if ans_text == '':
                 print(fields["metadata"])
-
 
         return Instance(fields)
