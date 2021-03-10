@@ -279,6 +279,7 @@ class BertJointNQ(Model):
                         predicted_start, predicted_end = tuple(best_span)
                         orig_start_token = window_context_wordpiece_tokens[predicted_start].idx
                         orig_end_token = window_context_wordpiece_tokens[predicted_end].idx
+                        start_of_orig_context = window_context_wordpiece_tokens[0].idx
                         # 下面这一段好像意思是，如果预测到的点在一个词的中间，那么这个对应的token应该idx是none，
                         # 如果是答案开始，我们往前找到第一个有index的，如果是答案结束我们往后找第一个有index的
                         # while (
@@ -311,7 +312,9 @@ class BertJointNQ(Model):
 
                         # TODO 那么问题来了，我为什么要改下面这行呢？我为什么之前要改 best_span_string 的计算方式呢
                         # 下面两行，第一行是20年11月发现的问题，当时没改。第二行是21年2月改过来的
-                        best_span_string = ' '.join(metadata_entry["context"].split(' ')[orig_start_token:orig_end_token+1])
+                        best_span_string = ' '.join(metadata_entry["context"].split(' ')[
+                                                    orig_start_token - start_of_orig_context:
+                                                    orig_end_token+1 - start_of_orig_context])
                             # best_span_string = metadata_entry["context"][orig_start_token:orig_end_token]
 
                     answer_text = metadata_entry.get("answer_text")

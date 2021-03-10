@@ -660,6 +660,7 @@ class BertJointNQReaderSimple(DatasetReader):
             answers,
             window_token_answer_span,
             additional_metadata,
+            train=True,
         )
         return instance
 
@@ -771,7 +772,8 @@ class BertJointNQReaderSimple(DatasetReader):
             answers: List[Dict],
             context: str,
             first_answer_offset: Optional[int],
-            output_type: str
+            output_type: str,
+            train=False
     ) -> Iterable[Instance]:
         # tokenize context by spaces first, and then with the wordpiece tokenizer
         # For RoBERTa, this produces a bug where every token is marked as beginning-of-sentence. To fix it, we
@@ -906,6 +908,7 @@ class BertJointNQReaderSimple(DatasetReader):
                         answers,
                         window_token_answer_span,
                         additional_metadata,
+                        train=train,
                     )
                     # yield instance
                     instance_generated.append(instance)
@@ -939,6 +942,7 @@ class BertJointNQReaderSimple(DatasetReader):
             answers: List[Dict],
             windows_token_answer_span: Optional[Tuple[int, int]],
             additional_metadata: Dict[str, Any] = None,
+            train=True,
     ) -> Instance:
         '''
 
@@ -1049,23 +1053,25 @@ class BertJointNQReaderSimple(DatasetReader):
         )
         # todo change the mask above to add -1
 
-        # make the metadata
-        first_part_context = ' '.join(context_text.split(' ')[:window_context_wordpiece_tokens[-1].idx + 1])
-        metadata = {
-            "start_of_context": start_of_context,
-            "context": first_part_context,
-            "window_context_wordpiece_tokens": window_context_wordpiece_tokens,
-            "answer_text": answer_text,
-            # 以上对计算 em-f1 有用。以下用于 debug
-            # "answer_type_idx": answer_type_idx,
-            # "question": question,
-            "answers": answers,
-            # "qwc": qwc
-        }
-        # TODO add doc url & ID
-        if additional_metadata is not None:
-            metadata.update(additional_metadata)
-        fields["metadata"] = MetadataField(metadata)
+        # make the metadata if train
+        if not train:
+            first_part_context = ' '.join(context_text.split(' ')[window_context_wordpiece_tokens[0].idx
+                                                                  :window_context_wordpiece_tokens[-1].idx + 1])
+            metadata = {
+                "start_of_context": start_of_context,
+                "context": first_part_context,
+                "window_context_wordpiece_tokens": window_context_wordpiece_tokens,
+                "answer_text": answer_text,
+                # 以上对计算 em-f1 有用。以下用于 debug
+                # "answer_type_idx": answer_type_idx,
+                # "question": question,
+                "answers": answers,
+                # "qwc": qwc
+            }
+            # TODO add doc url & ID
+            if additional_metadata is not None:
+                metadata.update(additional_metadata)
+            fields["metadata"] = MetadataField(metadata)
         # todo remove below
         if ans_type == 'long' or ans_type == 'short':
             if answer_text == '':

@@ -61,7 +61,8 @@ class NQPredictor(Predictor):
                 answers=[],
                 context=json_dict["contexts"],
                 first_answer_offset=None,
-                output_type='instance'
+                output_type='instance',
+                train=False
             )
         )
         self._next_qid += 1
