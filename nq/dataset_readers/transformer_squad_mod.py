@@ -102,8 +102,11 @@ class TransformerSquadReaderMod(DatasetReader):
             dataset_json = json.load(dataset_file)
             dataset = dataset_json["data"]
         logger.info("Reading the dataset")
+        logger.info(f'Skip-impossible-question:{self.skip_invalid_examples}, '
+                    f'so no-answer instances will be yielded: {not self.skip_invalid_examples}')
         yielded_question_count = 0
         questions_with_more_than_one_instance = 0
+        # no_ans_ins = 0
         for article in dataset:
             for paragraph_json in article["paragraphs"]:
                 context = paragraph_json["context"]
@@ -126,10 +129,17 @@ class TransformerSquadReaderMod(DatasetReader):
                     instances_yielded = 0
                     for instance in instances:
                         yield instance
-                        instances_yielded += 1
+                        # no_ans_ins += instance.fields['answer_type'] == 0
+                        # logger.info(instance.fields['answer_type'])
+                        # instances_yielded += 1
                     if instances_yielded > 1:
                         questions_with_more_than_one_instance += 1
                     yielded_question_count += 1
+
+            # if no_ans_ins == 10:
+            #     logger.info("%d no_answer instances yielded", no_ans_ins)
+            # if no_ans_ins == 100:
+            #     logger.info("%d no_answer instances yielded", no_ans_ins)
 
         if questions_with_more_than_one_instance > 0:
             logger.info(
@@ -137,6 +147,7 @@ class TransformerSquadReaderMod(DatasetReader):
                 questions_with_more_than_one_instance,
                 100 * questions_with_more_than_one_instance / yielded_question_count,
             )
+        # logger.info("%d no_answer instances yielded", no_ans_ins)
 
     def make_instances(
         self,
@@ -254,7 +265,7 @@ class TransformerSquadReaderMod(DatasetReader):
                     window_token_answer_span,
                     additional_metadata,
                 )
-                yield instance
+                yield instance# , window_token_answer_span is None
 
             stride_start += space_for_context
             if stride_start >= len(tokenized_context):
@@ -314,7 +325,7 @@ class TransformerSquadReaderMod(DatasetReader):
         else:
             # We have to put in something even when we don't have an answer, so that this instance can be batched
             # together with other instances that have answers.
-            fields["answer_span"] = SpanField(-1, -1, question_field)
+            fields["answer_span"] = SpanField(0, 0, question_field)
             fields['answer_type'] = LabelField(AnswerType.UNKNOWN, skip_indexing=True)
 
         # make the context span, i.e., the span of text from which possible answers should be drawn

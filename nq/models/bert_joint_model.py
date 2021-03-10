@@ -146,16 +146,20 @@ class BertJointNQ(Model):
         embedded_question = self._text_field_embedder(question_with_context) # TODO ERROR HERE
         # print("embedded_question", embedded_question.shape)
         # raise Exception('unacceptable!')
+        # shape: (batch_size, sequence_length, 2)
         logits = self._linear_layer(embedded_question)
-        # print("logits", logits.shape)
+        # shape: (batch_size, sequence_length, 1)
         span_start_logits, span_end_logits = logits.split(1, dim=-1)
-        # print('span_start_logits', span_start_logits.shape)
-        # print('span_end_logits', span_end_logits.shape)
+        # shape: (batch_size, sequence_length)
         span_start_logits = span_start_logits.squeeze(-1)
+        # shape: (batch_size, sequence_length)
         span_end_logits = span_end_logits.squeeze(-1)
         # print('span_start_logits', span_start_logits.shape)
         # print('span_end_logits', span_end_logits.shape)
 
+        # Create a mask for `question_with_context` to mask out tokens that are not part
+        # of the context.
+        # shape: (batch_size, sequence_length)
         possible_answer_mask = torch.zeros_like(
             get_token_ids_from_text_field_tensors(question_with_context), dtype=torch.bool
         )
@@ -165,8 +169,13 @@ class BertJointNQ(Model):
         # that way, there is no possibility that answer fall in the [cls][question tokens][sep] part
 
         for i, (start, end) in enumerate(context_span):
-            possible_answer_mask[i, start : end + 1] = True
+            possible_answer_mask[i, start: end + 1] = True
+            # Also unmask the [CLS] token since that token is used to indicate that
+            # the question is impossible.
+            possible_answer_mask[i, 0] = True
 
+        # Replace the masked values with a very negative constant since we're in log-space.
+        # shape: (batch_size, sequence_length)
         span_start_logits = util.replace_masked_values(
             span_start_logits, possible_answer_mask, -1e32
         )
@@ -174,11 +183,16 @@ class BertJointNQ(Model):
 
         span_start_probs = torch.nn.functional.softmax(span_start_logits, dim=-1)
         span_end_probs = torch.nn.functional.softmax(span_end_logits, dim=-1)
+        # Now calculate the best span.
+        # shape: (batch_size, 2)
         best_spans = get_best_span(span_start_logits, span_end_logits)
+
+        # Sum the span start score with the span end score to get an overall score for the span.
+        # shape: (batch_size,)
         best_span_scores = torch.gather(
             span_start_logits, 1, best_spans[:, 0].unsqueeze(1)
         ) + torch.gather(span_end_logits, 1, best_spans[:, 1].unsqueeze(1)) - \
-                           span_start_logits[:,1].unsqueeze(1)- span_end_logits[:,1].unsqueeze(1)
+                           span_start_logits[:,0].unsqueeze(1)- span_end_logits[:,0].unsqueeze(1)
         best_span_scores = best_span_scores.squeeze(1)
         bert_cls_vec = embedded_question[:, 0, :]
         type_logits = self.classifier_feedforward(bert_cls_vec)
@@ -186,14 +200,14 @@ class BertJointNQ(Model):
         argmax_indices = torch.argmax(type_probs, dim=-1, keepdim=True)
 
         output_dict = {
-            "span_start_logits": span_start_logits,
-            "span_start_probs": span_start_probs,
-            "span_end_logits": span_end_logits,
-            "span_end_probs": span_end_probs,
+            # "span_start_logits": span_start_logits,
+            # "span_start_probs": span_start_probs,
+            # "span_end_logits": span_end_logits,
+            # "span_end_probs": span_end_probs,
             "best_span": best_spans,
             "best_span_scores": best_span_scores,
-            "answer_type_logits": type_logits,
-            "answer_type_probs": type_probs,
+            # "answer_type_logits": type_logits,
+            # "answer_type_probs": type_probs,
             "answer_type_pred": argmax_indices
         }
 
@@ -201,19 +215,19 @@ class BertJointNQ(Model):
         if answer_span is not None:
             span_start = answer_span[:, 0]
             span_end = answer_span[:, 1]
-            span_mask = span_start != -1
+            # span_mask = span_start != -1
             self._span_accuracy(
-                best_spans, answer_span, span_mask.unsqueeze(-1).expand_as(best_spans)
+                best_spans, answer_span,  # span_mask.unsqueeze(-1).expand_as(best_spans)
             )
 
-            start_loss = cross_entropy(span_start_logits, span_start, ignore_index=-1)
+            start_loss = cross_entropy(span_start_logits, span_start, )  # ignore_index=-1)
             if torch.any(start_loss > 1e9):
                 logger.critical("Start loss too high (%r)", start_loss)
                 logger.critical("span_start_logits: %r", span_start_logits)
                 logger.critical("span_start: %r", span_start)
                 assert False
 
-            end_loss = cross_entropy(span_end_logits, span_end, ignore_index=-1)
+            end_loss = cross_entropy(span_end_logits, span_end, )  # ignore_index=-1)
             if torch.any(end_loss > 1e9):
                 logger.critical("End loss too high (%r)", end_loss)
                 logger.critical("span_end_logits: %r", span_end_logits)
@@ -222,10 +236,11 @@ class BertJointNQ(Model):
 
             type_loss = cross_entropy(type_logits, answer_type)
             ## logger.info(f'======start_loss: {start_loss}, end_loss: {end_loss}, type_loss: {type_loss}======')
-            loss = start_loss + end_loss + type_loss
+            loss = start_loss + end_loss
+            # loss = start_loss + end_loss + type_loss
 
-            self._span_start_accuracy(span_start_logits, span_start, span_mask)
-            self._span_end_accuracy(span_end_logits, span_end, span_mask)
+            self._span_start_accuracy(span_start_logits, span_start)
+            self._span_end_accuracy(span_end_logits, span_end)
             self._ans_type_accuracy(type_probs, answer_type)
 
             output_dict["loss"] = loss
@@ -238,92 +253,151 @@ class BertJointNQ(Model):
         #             logger.info(output_dict[''])
 
         # Compute the EM and F1 on SQuAD and add the tokenized input to the output.
+        # get best span str & best span orig
         if metadata is not None:
             best_spans = best_spans.detach().cpu().numpy()
             answer_type_preds = output_dict['answer_type_pred'].detach().cpu().numpy()
             output_dict["best_span_str"] = []
             output_dict["best_span_orig"] = []
-            output_dict['answer_text_gold'] = []
+            output_dict["answer_type_pred_cls"] = []
             for i, (metadata_entry, best_span) in enumerate(zip(metadata, best_spans)):
-                window_context_wordpiece_tokens = metadata_entry["window_context_wordpiece_tokens"]
+                if 'window_context_wordpiece_tokens' in metadata_entry:
+                    window_context_wordpiece_tokens = metadata_entry["window_context_wordpiece_tokens"]
 
-                # 注释 we remove the offsets and only focus on the context part
-                best_span -= metadata_entry['start_of_context']
-                assert np.all(best_span >= 0)
+                    # 注释 we remove the offsets and only focus on the context part
+                    if best_span[0] == 0:
+                        # Predicting [CLS] is interpreted as predicting the question as unanswerable.
+                        best_span_string = ""
+                        # NOTE: even though we've "detached" 'best_spans' above, this still
+                        # modifies the original tensor in-place.
+                        best_span[0], best_span[1] = -1, -1
+                        orig_start_token, orig_end_token = -1, -1
+                    else:
+                        best_span -= metadata_entry['start_of_context']
+                        assert np.all(best_span >= 0)
 
-                predicted_start, predicted_end = tuple(best_span)
-                orig_start_token = window_context_wordpiece_tokens[predicted_start].idx
-                orig_end_token = window_context_wordpiece_tokens[predicted_end].idx
-                # 下面这一段好像意思是，如果预测到的点在一个词的中间，那么这个对应的token应该idx是none，
-                # 如果是答案开始，我们往前找到第一个有index的，如果是答案结束我们往后找第一个有index的
-                # while (
-                #     predicted_start >= 0
-                #     and context_tokens_for_question[predicted_start].idx is None
-                # ):
-                #     predicted_start -= 1
-                # if predicted_start < 0:
-                #     logger.warning(
-                #         f"Could not map the token '{window_context_wordpiece_tokens[best_span[0]].text}' at index "
-                #         f"'{best_span[0]}' to an offset in the original text."
-                #     )
-                #     orig_start_token = 0
-                # else:
-                #     orig_start_token = window_context_wordpiece_tokens[predicted_start].idx
+                        predicted_start, predicted_end = tuple(best_span)
+                        orig_start_token = window_context_wordpiece_tokens[predicted_start].idx
+                        orig_end_token = window_context_wordpiece_tokens[predicted_end].idx
+                        # 下面这一段好像意思是，如果预测到的点在一个词的中间，那么这个对应的token应该idx是none，
+                        # 如果是答案开始，我们往前找到第一个有index的，如果是答案结束我们往后找第一个有index的
+                        # while (
+                        #     predicted_start >= 0
+                        #     and context_tokens_for_question[predicted_start].idx is None
+                        # ):
+                        #     predicted_start -= 1
+                        # if predicted_start < 0:
+                        #     logger.warning(
+                        #         f"Could not map the token '{window_context_wordpiece_tokens[best_span[0]].text}' at index "
+                        #         f"'{best_span[0]}' to an offset in the original text."
+                        #     )
+                        #     orig_start_token = 0
+                        # else:
+                        #     orig_start_token = window_context_wordpiece_tokens[predicted_start].idx
 
-                # while (
-                #     predicted_end < len(context_tokens_for_question)
-                #     and context_tokens_for_question[predicted_end].idx is None
-                # ):
-                #     predicted_end += 1
-                # if predicted_end >= len(window_context_wordpiece_tokens):
-                #     logger.warning(
-                #         f"Could not map the token '{window_context_wordpiece_tokens[best_span[1]].text}' at index "
-                #         f"'{best_span[1]}' to an offset in the original text."
-                #     )
-                #     orig_end_token = len(metadata_entry["context"])
-                # else:
-                #     orig_end_token = window_context_wordpiece_tokens[predicted_end].idx
+                        # while (
+                        #     predicted_end < len(context_tokens_for_question)
+                        #     and context_tokens_for_question[predicted_end].idx is None
+                        # ):
+                        #     predicted_end += 1
+                        # if predicted_end >= len(window_context_wordpiece_tokens):
+                        #     logger.warning(
+                        #         f"Could not map the token '{window_context_wordpiece_tokens[best_span[1]].text}' at index "
+                        #         f"'{best_span[1]}' to an offset in the original text."
+                        #     )
+                        #     orig_end_token = len(metadata_entry["context"])
+                        # else:
+                        #     orig_end_token = window_context_wordpiece_tokens[predicted_end].idx
 
-                # TODO 那么问题来了，我为什么要改下面这行呢？我为什么之前要改 best_span_string 的计算方式呢
-                # 下面两行，第一行是20年11月发现的问题，当时没改。第二行是21年2月改过来的
-                best_span_string = ' '.join(metadata_entry["context"].split(' ')[orig_start_token:orig_end_token+1])
-                    # best_span_string = metadata_entry["context"][orig_start_token:orig_end_token]
+                        # TODO 那么问题来了，我为什么要改下面这行呢？我为什么之前要改 best_span_string 的计算方式呢
+                        # 下面两行，第一行是20年11月发现的问题，当时没改。第二行是21年2月改过来的
+                        best_span_string = ' '.join(metadata_entry["context"].split(' ')[orig_start_token:orig_end_token+1])
+                            # best_span_string = metadata_entry["context"][orig_start_token:orig_end_token]
 
-                answer_text = metadata_entry.get("answer_text")
-                if len(answer_text) > 0:
-                    self._per_instance_metrics(best_span_string, [answer_text])
-                # TODO 问题出在上面这一行。和原来的 model 文件相比，best_span_string的计算方法变了，所以实际传进去的东西不一样。
+                    answer_text = metadata_entry.get("answer_text")
+                    if len(answer_text) > 0:
+                        self._per_instance_metrics(best_span_string, [answer_text])
+                    # TODO 问题出在上面这一行。和原来的 model 文件相比，best_span_string的计算方法变了，所以实际传进去的东西不一样。
 
-                output_dict["best_span_str"].append(best_span_string)
-                output_dict["best_span_orig"].append((orig_start_token, orig_end_token))
-                output_dict['answer_text_gold'].append(answer_text)
-                display_bad_case = False
-                # display_bad_case = True
-                if display_bad_case:
+                    output_dict["best_span_str"].append(best_span_string)
+                    output_dict["best_span_orig"].append((orig_start_token, orig_end_token))
                     answer_type_pred = answer_type_preds[i]
-                    answer_type_idx = metadata_entry['answer_type_idx']
-                    # if answer_type_pred != answer_type_idx or answer_type_pred != 0 and best_span_string != answer_text:
-                    if best_span_string != answer_text and answer_type_idx != 0:
-                        # if random.random() < 0.05:
-                            print(metadata_entry['id'])
-                            print(metadata_entry['doc_url'])
-                            print('-' * 50)
-                            print('Q:', metadata_entry['question'])
-                            print('-' * 50)
-                            print('Prediction', answer_type_pred, orig_start_token, orig_end_token)
-                            print(best_span)
-                            print('~~~', best_span_string)
-                            print('-'*30)
-                            print('Gold:', answer_type_idx)
-                            print('~~~', answer_text)
-                            # for i in range(10):
-                            #     print(context_tokens_for_question[i])
-                            # print(context_tokens_for_question)
-                            # print(metadata_entry['qwc'])
-                            # print(metadata_entry['context'])
-                            print('='*70)
-                            print('')
-                            print('')
+                    output_dict['answer_type_pred_cls'].append(answer_type_pred)
+                    display_bad_case = False
+                    # display_bad_case = True
+                    if display_bad_case:
+                        answer_type_idx = metadata_entry['answer_type_idx']
+                        # if answer_type_pred != answer_type_idx or answer_type_pred != 0 and best_span_string != answer_text:
+                        if best_span_string != answer_text and answer_type_idx != 0:
+                            # if random.random() < 0.05:
+                                print(metadata_entry['id'])
+                                print(metadata_entry['doc_url'])
+                                print('-' * 50)
+                                print('Q:', metadata_entry['question'])
+                                print('-' * 50)
+                                print('Prediction', answer_type_pred, orig_start_token, orig_end_token)
+                                print(best_span)
+                                print('~~~', best_span_string)
+                                print('-'*30)
+                                print('Gold:', answer_type_idx)
+                                print('~~~', answer_text)
+                                # for i in range(10):
+                                #     print(context_tokens_for_question[i])
+                                # print(context_tokens_for_question)
+                                # print(metadata_entry['qwc'])
+                                # print(metadata_entry['context'])
+                                print('='*70)
+                                print('')
+                                print('')
+                else:
+                    context_tokens_for_question = metadata_entry["context_tokens"]
+                    if best_span[0] == 0:
+                        # Predicting [CLS] is interpreted as predicting the question as unanswerable.
+                        best_span_string = ""
+                        # NOTE: even though we've "detached" 'best_spans' above, this still
+                        # modifies the original tensor in-place.
+                        best_span[0], best_span[1] = -1, -1
+                    else:
+                        best_span -= 1 + len(metadata_entry["question_tokens"]) + 2
+                        assert np.all(best_span >= 0)
+
+                        predicted_start, predicted_end = tuple(best_span)
+
+                        while (
+                                predicted_start >= 0
+                                and context_tokens_for_question[predicted_start].idx is None
+                        ):
+                            predicted_start -= 1
+                        if predicted_start < 0:
+                            logger.warning(
+                                f"Could not map the token '{context_tokens_for_question[best_span[0]].text}' at index "
+                                f"'{best_span[0]}' to an offset in the original text."
+                            )
+                            character_start = 0
+                        else:
+                            character_start = context_tokens_for_question[predicted_start].idx
+
+                        while (
+                                predicted_end < len(context_tokens_for_question)
+                                and context_tokens_for_question[predicted_end].idx is None
+                        ):
+                            predicted_end += 1
+                        if predicted_end >= len(context_tokens_for_question):
+                            logger.warning(
+                                f"Could not map the token '{context_tokens_for_question[best_span[1]].text}' at index "
+                                f"'{best_span[1]}' to an offset in the original text."
+                            )
+                            character_end = len(metadata_entry["context"])
+                        else:
+                            end_token = context_tokens_for_question[predicted_end]
+                            character_end = end_token.idx + len(sanitize_wordpiece(end_token.text))
+
+                        best_span_string = metadata_entry["context"][character_start:character_end]
+                    output_dict["best_span_str"].append(best_span_string)
+
+                    answers = metadata_entry.get("answers")
+                    if len(answers) > 0:
+                        self._per_instance_metrics(best_span_string, answers)
 
         return output_dict
 

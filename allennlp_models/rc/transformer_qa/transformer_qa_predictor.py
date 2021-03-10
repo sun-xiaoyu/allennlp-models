@@ -54,7 +54,7 @@ class TransformerQAPredictor(Predictor):
     def _json_to_instances(self, json_dict: JsonDict) -> List[Instance]:
         result = list(
             self._dataset_reader.make_instances(
-                qid=str(self._next_qid),
+                qid=json_dict.get('id') or str(self._next_qid),
                 question=json_dict["question"],
                 answers=[],
                 context=json_dict["context"],
@@ -87,7 +87,8 @@ class TransformerQAPredictor(Predictor):
         for instance, output in zip(instances, outputs):
             qid = instance["metadata"]["id"]
             output["id"] = qid
-            output["answers"] = instance["metadata"]["answers"]
+            if instance["metadata"]["answers"]:
+                output["answers"] = instance["metadata"]["answers"]
             if qid in qid_to_output:
                 old_output = qid_to_output[qid]
                 if old_output["best_span_scores"] < output["best_span_scores"]:

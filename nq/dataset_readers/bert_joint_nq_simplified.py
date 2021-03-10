@@ -678,16 +678,16 @@ class BertJointNQReaderSimple(DatasetReader):
         logger.info(f"Example entries are shuffled within each file? {shuffle}!")
         for path in input_files:
             logger.info("Reading: %s", path)
-            textins = []
+            # textins = []
             with open(path, 'r') as f:
                 for line in f:
                     js = json.loads(line)
-                    textins.append(js)
+                    # textins.append(js)
                     # if js['additional_metadata']['id'] != '1875749308518572232':
                     #     continue
-                if shuffle:
-                    random.shuffle(textins)
-                for js in textins:
+                # if shuffle:
+                #     random.shuffle(textins)
+                # for js in textins:
                     instance = self.text_instances_js_to_instances(js)
                     yield instance
 
@@ -833,14 +833,15 @@ class BertJointNQReaderSimple(DatasetReader):
                     type_id=self.non_content_type_id, )]
 
             # map the answer span
-            if i == answers[0]['span_start']:
-                token_answer_span_start = len(tokenized_context)
-            if i == answers[0]['span_end']:
-                token_answer_span_end = len(tokenized_context) + len(wordpiece_tokens) - 1
+            if first_answer_offset:
+                if i == answers[0]['span_start']:
+                    token_answer_span_start = len(tokenized_context)
+                if i == answers[0]['span_end']:
+                    token_answer_span_end = len(tokenized_context) + len(wordpiece_tokens) - 1
 
             tokenized_context.extend(wordpiece_tokens)
 
-        if first_answer_offset >= 0:
+        if first_answer_offset and first_answer_offset >= 0:
             assert (token_answer_span_start, token_answer_span_end) != (-1, -1)
 
         # Tokenize the question
@@ -1034,9 +1035,8 @@ class BertJointNQReaderSimple(DatasetReader):
         else:
             # We have to put in something even when we don't have an answer, so that this instance can be batched
             # together with other instances that have answers.
-            # TODO change to cls token here？
-            # fields["answer_span"] = SpanField(start_of_context-1, start_of_context-1, question_with_context_field)
-            fields["answer_span"] = SpanField(- 1, - 1, question_with_context_field)
+            # TODO change to cls token here？ yes!
+            fields["answer_span"] = SpanField(0, 0, question_with_context_field)
             ans_type = 'unknown'
             answer_text = ""
 
@@ -1050,14 +1050,15 @@ class BertJointNQReaderSimple(DatasetReader):
         # todo change the mask above to add -1
 
         # make the metadata
+        first_part_context = ' '.join(context_text.split(' ')[:window_context_wordpiece_tokens[-1].idx + 1])
         metadata = {
             "start_of_context": start_of_context,
-            "context": context_text,
+            "context": first_part_context,
             "window_context_wordpiece_tokens": window_context_wordpiece_tokens,
             "answer_text": answer_text,
             # 以上对计算 em-f1 有用。以下用于 debug
-            "answer_type_idx": answer_type_idx,
-            "question": question,
+            # "answer_type_idx": answer_type_idx,
+            # "question": question,
             "answers": answers,
             # "qwc": qwc
         }

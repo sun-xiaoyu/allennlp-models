@@ -1,4 +1,5 @@
 import json
+import logging
 from typing import List, Dict, Any
 
 from allennlp.models import Model
@@ -55,15 +56,12 @@ class NQPredictor(Predictor):
     def _json_to_instances(self, json_dict: JsonDict) -> List[Instance]:
         result = list(
             self._dataset_reader.make_instances(
-                doc_info={
-                    'id': str(self._next_qid),
-                    'doc_url': '',
-                },
-                question=json_dict["question"],
+                doc_info=json_dict['doc_info'],
+                question=json_dict["question_text"],
                 answers=[],
-                context=json_dict["context"],
+                context=json_dict["contexts"],
                 first_answer_offset=None,
-                output_type='instances'
+                output_type='instance'
             )
         )
         self._next_qid += 1
@@ -84,33 +82,54 @@ class NQPredictor(Predictor):
         return result
 
     @overrides
-    def predict_batch_instance(self, instances: List[Instance]) -> List[JsonDict]:
-        outputs = self._model.forward_on_instances(instances)
+    def predict_batch_instance(self, instances: List[Instance], batch_size=24) -> List[JsonDict]:
+        if len(instances) == 0:
+            pass
+            a = 1
+        if len(instances) < batch_size:
+            outputs = self._model.forward_on_instances(instances)
+        else:
+            n = len(instances)
+            batch_start = 0
+            n_batch = len(instances) // batch_size + 1
+            outputs = []
+            for i in range(n_batch):
+                batch_ins = instances[batch_start: min(n, batch_start + batch_size)]
+                if not batch_ins:
+                    break
+                res = self._model.forward_on_instances(batch_ins)
+                outputs.extend(res)
+                batch_start += batch_size
 
+        scores = [x['best_span_scores'] for x in outputs]
+        max_score = max(scores)
+        max_score_idx = scores.index(max_score)
+
+        return [sanitize(outputs[max_score_idx])]
+        # todo important assumption!
+        # 这里我们假设调用这个函数的都是同一个example生成的instance。所以用了上面的代码注释掉了下面的
         # group outputs with the same question id
-        qid_to_output: Dict[str, Dict[str, Any]] = {}
-        for instance, output in zip(instances, outputs):
-            qid = instance["metadata"]["id"]
-            output["id"] = qid
-            output["answers"] = instance["metadata"]["answers"]
-            if qid in qid_to_output:
-                old_output = qid_to_output[qid]
-                if old_output["best_span_scores"] < output["best_span_scores"]:
-                    qid_to_output[qid] = output
-            else:
-                qid_to_output[qid] = output
-
-        return [sanitize(o) for o in qid_to_output.values()]
+        # qid_to_output: Dict[str, Dict[str, Any]] = {}
+        # for instance, output in zip(instances, outputs):
+        #     qid = instance["metadata"]["id"]
+        #     output["id"] = qid
+        #     output["answers"] = instance["metadata"]["answers"]
+        #     if qid in qid_to_output:
+        #         old_output = qid_to_output[qid]
+        #         if old_output["best_span_scores"] < output["best_span_scores"]:
+        #             qid_to_output[qid] = output
+        #     else:
+        #         qid_to_output[qid] = output
+        #
+        # return [sanitize(o) for o in qid_to_output.values()]
 
     def predict_textins(self, input_paths):
         ins_gen = self._dataset_reader.read_text_instances(input_paths)
         instances = []
         for ins in ins_gen:
             instances.append(ins)
-        print(len(instances))
-        print(instances[0])
         n = len(instances)
-        batch_size = 32
+        batch_size = 24
         batch_start = 0
         n_batch = len(instances) // batch_size + 1
         result = []

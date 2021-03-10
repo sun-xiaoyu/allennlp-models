@@ -32,10 +32,10 @@ class SquadEmAndF1(Metric):
             The value to average.
         """
         exact_match = squad.metric_max_over_ground_truths(
-            squad.exact_match_score, best_span_string, answer_strings
+            squad.compute_exact, best_span_string, answer_strings
         )
         f1_score = squad.metric_max_over_ground_truths(
-            squad.f1_score, best_span_string, answer_strings
+            squad.compute_f1, best_span_string, answer_strings
         )
 
         count = 1
