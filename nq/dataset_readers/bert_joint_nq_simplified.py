@@ -265,6 +265,8 @@ def create_example_from_simplified_jsonl(e):
         "span_start": rel_start,
         "span_end": rel_end,
         "answer_type": answer_type,
+        'orig_start': start,
+        'orig_end': end
     }
     # print(answer["span_start"], answer["span_end"])
     no_ans = ans_idx == -1
@@ -283,6 +285,7 @@ def create_example_from_simplified_jsonl(e):
         context["text_map"], context["tokens"] = get_candidate_text(e, idx)
         context_idxs.append(idx)
         context_list.append(context)
+        assert len(context["text_map"]) == len(context["tokens"])
     # if len(context_list) >= FLAGS.max_contexts:
     #   break
     if not no_ans and ans_idx not in context_idxs:
@@ -303,6 +306,7 @@ def create_example_from_simplified_jsonl(e):
     }
     # todo 不has？？
 
+    single_map = []
     context_tokens = []
     offset = 0
     for context in context_list:
@@ -311,6 +315,7 @@ def create_example_from_simplified_jsonl(e):
         # context_tokens.extend(["[Context]", context["type"]])
         # offset += 2
         context_tokens.extend([context["type"]])
+        single_map.append(-1)
         offset += 1
         # it's wrong because [Context] shows where the long answer candidate:
         #   at present, we allow only top-level candidates.
@@ -322,7 +327,9 @@ def create_example_from_simplified_jsonl(e):
         # want to skip those.
         if context["tokens"]:
             context_tokens.extend(context["tokens"])
+            single_map.extend(context["text_map"])
             offset += len(context["tokens"])
+
 
     if no_ans:
         expected = ''
@@ -336,6 +343,10 @@ def create_example_from_simplified_jsonl(e):
     # todo a different context! here we have removed html tokens and empty contexts, we added special tokens
     # we can call them cleaned_context
     example["contexts"] = " ".join(context_tokens)
+
+    # this is the map from the cleaned context token idx to the original token idx
+    example['token_map'] = single_map
+
     # print('preprocess')
     # print(context_idxs)
     # print(no_ans)
@@ -425,9 +436,10 @@ class BertJointNQReaderSimple(DatasetReader):
             vocab_len_location="/home/sunxy-s18/data/nq/vocab.len",
             input_type='example',
             output_type='instance',
+            lazy=True,
             **kwargs
     ) -> None:
-        super().__init__(**kwargs)
+        super().__init__(lazy=lazy, **kwargs)
         self._tokenizer = PretrainedTransformerTokenizer(
             transformer_model_name, add_special_tokens=False, calculate_character_offsets=True
         )

@@ -197,7 +197,7 @@ class BertJointNQ(Model):
         bert_cls_vec = embedded_question[:, 0, :]
         type_logits = self.classifier_feedforward(bert_cls_vec)
         type_probs = torch.nn.functional.softmax(type_logits, dim=-1)
-        argmax_indices = torch.argmax(type_probs, dim=-1, keepdim=True)
+        argmax_indices = torch.argmax(type_probs, dim=-1)
 
         output_dict = {
             # "span_start_logits": span_start_logits,
@@ -208,7 +208,7 @@ class BertJointNQ(Model):
             "best_span_scores": best_span_scores,
             # "answer_type_logits": type_logits,
             # "answer_type_probs": type_probs,
-            "answer_type_pred": argmax_indices
+            "ans_type_pred_cls": argmax_indices
         }
 
         # Compute the loss for training.
@@ -256,10 +256,9 @@ class BertJointNQ(Model):
         # get best span str & best span orig
         if metadata is not None:
             best_spans = best_spans.detach().cpu().numpy()
-            answer_type_preds = output_dict['answer_type_pred'].detach().cpu().numpy()
+            answer_type_preds = output_dict['ans_type_pred_cls'].detach().cpu().numpy()
             output_dict["best_span_str"] = []
             output_dict["best_span_orig"] = []
-            output_dict["answer_type_pred_cls"] = []
             for i, (metadata_entry, best_span) in enumerate(zip(metadata, best_spans)):
                 if 'window_context_wordpiece_tokens' in metadata_entry:
                     window_context_wordpiece_tokens = metadata_entry["window_context_wordpiece_tokens"]
@@ -325,7 +324,6 @@ class BertJointNQ(Model):
                     output_dict["best_span_str"].append(best_span_string)
                     output_dict["best_span_orig"].append((orig_start_token, orig_end_token))
                     answer_type_pred = answer_type_preds[i]
-                    output_dict['answer_type_pred_cls'].append(answer_type_pred)
                     display_bad_case = False
                     # display_bad_case = True
                     if display_bad_case:
