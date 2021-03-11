@@ -236,8 +236,8 @@ class BertJointNQ(Model):
 
             type_loss = cross_entropy(type_logits, answer_type)
             ## logger.info(f'======start_loss: {start_loss}, end_loss: {end_loss}, type_loss: {type_loss}======')
-            loss = start_loss + end_loss
-            # loss = start_loss + end_loss + type_loss
+            # loss = start_loss + end_loss
+            loss = start_loss + end_loss + type_loss
 
             self._span_start_accuracy(span_start_logits, span_start)
             self._span_end_accuracy(span_end_logits, span_end)

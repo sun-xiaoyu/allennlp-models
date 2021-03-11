@@ -67,10 +67,10 @@ class Processor(object):
         y_pred = [x['ans_type_pred'] for x in self.results]
         print(confusion_matrix(y_true, y_pred))
 
-        if 'answer_type_pred_cls' in self.results[0]:
+        if 'ans_type_pred_cls' in self.results[0]:
             print('Prediction with [CLS] token:')
             y_true = [x['ans_type_gold'] for x in self.results]
-            y_pred = [x['answer_type_pred_cls'] for x in self.results]
+            y_pred = [x['ans_type_pred_cls'] for x in self.results]
             print(confusion_matrix(y_true, y_pred))
 
     def generate_prediction_from_data(self, data_path, unique_id):
@@ -153,6 +153,7 @@ class NqProcessor(Processor):
         self.predictor = None
         # self.dev_data_path = '/home/sunxy-s18/data/nq/v1.0-nq-dev-all.jsonl'
         self.dev_data_path = '/home/sunxy-s18/data/nq/simplified_nq_dev_all_7830.jsonl'
+        # length of results: 7673
 
     def generate_prediction_from_data(self, data_path, max_ids=None):
         if not self.predictor:
@@ -225,21 +226,22 @@ if __name__ == '__main__':
     processor = NqProcessor(model_path)
     processor.predict_and_process(overwrite=overwrite, unique_id=unique_id)
     processor.confusion()
-    for res in processor.results:
-        if res['ans_type_pred'] != 0 or res['ans_type_pred'] != 0:
-            # print(json.dumps(res, indent=2))
-            sa = res['nq_eval']['short_answers'][0]
-            ga = res['answers'][0]
-            if ga['orig_start'] != sa['start_token'] or ga['orig_end'] != sa['end_token']:
-                print(res['id'])
-                print(res['doc_url'])
-                print('-' * 50)
-                print('Q:', res['question_text'])
-                print('-' * 50)
-                print('Prediction', sa['start_token'], sa['end_token'], res['ans_type_pred'], res['ans_type_pred_cls'])
-                print('~~~', res['best_span_str'])
-                print('-' * 30)
-                print('Gold:', ga['orig_start'], ga['orig_end'], res['ans_type_gold'])
-                print('~~~', ga['span_text'])
-                print('=' * 70)
-                print('\n')
+    if '-p' in args:
+        for res in processor.results:
+            if res['ans_type_pred'] != 0 or res['ans_type_pred'] != 0:
+                # print(json.dumps(res, indent=2))
+                sa = res['nq_eval']['short_answers'][0]
+                ga = res['answers'][0]
+                if ga['orig_start'] != sa['start_token'] or ga['orig_end'] != sa['end_token']:
+                    print(res['id'])
+                    print(res['doc_url'])
+                    print('-' * 50)
+                    print('Q:', res['question_text'])
+                    print('-' * 50)
+                    print('Prediction', sa['start_token'], sa['end_token'], res['ans_type_pred'], res['ans_type_pred_cls'])
+                    print('~~~', res['best_span_str'])
+                    print('-' * 30)
+                    print('Gold:', ga['orig_start'], ga['orig_end'], res['ans_type_gold'])
+                    print('~~~', ga['span_text'])
+                    print('=' * 70)
+                    print('\n')
