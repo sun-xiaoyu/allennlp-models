@@ -23,6 +23,8 @@ from allennlp.data.token_indexers import PretrainedTransformerIndexer
 from allennlp.data.tokenizers import Token, PretrainedTransformerTokenizer
 
 from nq.nq_text_utils import simplify_nq_example
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.metrics.pairwise import cosine_similarity
 
 # from allennlp_models.rc.common.reader_utils import char_span_to_token_span
 
@@ -297,7 +299,7 @@ def create_example_from_simplified_jsonl(e):
     example = {
         # "name": e['document_title'] if 'document_title' in e else 'Wikipedia',
         # the official simplify_nq script does not preserve doc title, that is why we don't use it.
-        "example_id": str(e["example_id"]),
+        "example_id": e["example_id"],
         "document_url": e['document_url'],
         "question_text": e["question_text"],
         "answers": [answer],
@@ -364,14 +366,40 @@ TextSpan = collections.namedtuple("TextSpan", "token_positions text")
 
 _HTML_TOKENS_RE = re.compile(r"^<[^ ]*>$", re.UNICODE)
 
-if __name__ == '__main__':
-    # with open('~/data/nq/v1.0-simplified_nq-dev-all.jsonl', 'r') as f:
-    with open('/home/sunxy-s18/data/nq/entries_dev_0_7829.jsonl', 'w') as fout:
-        with open('/home/sunxy-s18/data/nq/simplified_dev_0_7829.jsonl', 'r') as f:
-            for line in tqdm.tqdm(f):
-                js = json.loads(line)
-                entry = create_example_from_simplified_jsonl(js)
-                fout.write(json.dumps(entry, ensure_ascii=False) + '\n')
+# if __name__ == '__main__':
+#     # with open('~/data/nq/v1.0-simplified_nq-dev-all.jsonl', 'r') as f:
+#     with open('/home/sunxy-s18/data/nq/entries_dev_0_7829.jsonl', 'w') as fout:
+#         with open('/home/sunxy-s18/data/nq/simplified_dev_0_7829.jsonl', 'r') as f:
+#             for line in tqdm.tqdm(f):
+#                 js = json.loads(line)
+#                 entry = create_example_from_simplified_jsonl(js)
+#                 fout.write(json.dumps(entry, ensure_ascii=False) + '\n')
+
+
+def passage_sim_score(window_spans, tokenized_doc, doc, question):
+    pos_span = [x for x in window_spans if x[0]]
+    neg_span = [x for x in window_spans if not x[0]]
+    pos_span.sort(key=lambda x: x[1])
+    if not neg_span:
+        return pos_span, []
+    doc_words = doc.split(' ')
+    ref_passage = question
+    if pos_span:
+        ref_passage += ' ' + ' '.join(doc_words[tokenized_doc[pos_span[0][1]].idx:
+                                      tokenized_doc[pos_span[-1][2] - 1].idx + 1])
+    neg_passage = [' '.join(doc_words[tokenized_doc[x[1]].idx: tokenized_doc[x[2] - 1].idx + 1])
+                   for x in neg_span]
+    vectorizer = TfidfVectorizer()
+    X = vectorizer.fit_transform([ref_passage] + neg_passage)
+    reference_vector = X[0]
+    tfidf_matrix = X[1:]
+    sim_score = cosine_similarity(reference_vector, tfidf_matrix)
+    neg_span = [(sim_score[0][i], x[1], x[2]) for i, x in enumerate(neg_span)]
+    neg_span.sort(key=lambda x: x[0],reverse=True)
+    return pos_span, neg_span
+
+
+
 
 
 @DatasetReader.register("bert_joint_nq_simplified")
@@ -432,11 +460,11 @@ class BertJointNQReaderSimple(DatasetReader):
             skip_invalid_examples: bool = False,
             neg_pos_ratio: int = 1,
             enable_downsample_strategy=False,
-            downsample_strategy_partition=(0.05, 0.2, 0.75),
+            downsample_strategy='balanced',
             vocab_len_location="/home/sunxy-s18/data/nq/vocab.len",
             input_type='example',
             output_type='instance',
-            lazy=True,
+            lazy=False,
             **kwargs
     ) -> None:
         super().__init__(lazy=lazy, **kwargs)
@@ -452,7 +480,7 @@ class BertJointNQReaderSimple(DatasetReader):
         self.neg_pos_ratio = max(1, int(neg_pos_ratio))  # has to be an integer >= 1
         # ==1 要么本身没有负例，要么只留一个
         self.enable_downsample_strategy = enable_downsample_strategy
-        self.downsample_strategy_partition = downsample_strategy_partition
+        self.downsample_strategy = downsample_strategy
         self.max_query_length = max_query_length
         self.non_content_type_id = max(
             self._tokenizer.tokenizer.encode_plus("left", "right", return_token_type_ids=True)[
@@ -473,6 +501,12 @@ class BertJointNQReaderSimple(DatasetReader):
         # if `file_path` is a URL, redirect to the cache
         if self.input_type == 'text_instances':
             instances = self.read_text_instances(input_paths)
+            for ins in instances:
+                yield ins
+            return
+        elif self.input_type == 'text_entry':
+
+            instances = self.read_text_entry(input_paths)
             for ins in instances:
                 yield ins
             return
@@ -704,12 +738,99 @@ class BertJointNQReaderSimple(DatasetReader):
                     instance = self.text_instances_js_to_instances(js)
                     yield instance
 
+    def select_span_by_strategy(self, pos_span, neg_span, strategy='best'):
+        selected = []
+        if pos_span:
+            selected.append(pos_span[0])
+        if not neg_span:
+            selected = [(x[1], x[2]) for x in selected]
+            return selected
+        num_neg_to_keep = self.neg_pos_ratio
+        neg_span = [x for x in neg_span if x[1]<x[2]]
+        if strategy == 'best':
+            selected.extend(neg_span[:num_neg_to_keep])
+        elif strategy == 'worst':
+            selected.extend(neg_span[-num_neg_to_keep:])
+        elif len(neg_span) <= num_neg_to_keep:
+            selected.extend(neg_span)
+        elif strategy == 'random':
+            selected.extend(random.sample(neg_span, num_neg_to_keep))
+        elif strategy == 'balanced':
+            selected.append(neg_span[0])
+            selected.extend(random.sample(neg_span[1:], num_neg_to_keep - 1))
+        selected = [(x[1], x[2]) for x in selected]
+        return selected
+
+    def text_entry_js_to_instances(self, js) -> List[Instance]:
+        instances = []
+        tokenized_context = \
+            [Token(t[0], idx=t[1], text_id=t[2], type_id=self.non_content_type_id)
+             for t in js['tokenized_context']]
+        tokenized_question = \
+            [Token(t[0], idx=t[1], text_id=t[2], type_id=self.non_content_type_id)
+             for t in js['tokenized_question']]
+        additional_metadata = js['additional_metadata']
+        question = js['question']
+        context = js['context']
+        answers = js['answers']
+        token_answer_span = js['token_answer_span']
+        selected_spans = self.select_span_by_strategy(js['pos_span'], js['neg_span'],
+                                                      strategy=self.downsample_strategy)
+        for span in selected_spans:
+            tokenized_context_window = tokenized_context[span[0]:span[1]]
+            if len(tokenized_context_window) == 0:
+                print("wtf?")
+            window_token_answer_span = (
+                token_answer_span[0] - span[0],
+                token_answer_span[1] - span[0],
+            )
+            if any(i < 0 or i >= (span[1]-span[0]) for i in window_token_answer_span):
+                # The answer is not contained in the window.
+                window_token_answer_span = None
+            instance = self.text_to_instance(
+                question,
+                tokenized_question,
+                context,
+                tokenized_context_window,
+                answers,
+                window_token_answer_span,
+                additional_metadata,
+                train=True,
+            )
+            instances.append(instance)
+        return instances
+
+    def read_text_entry(self, input_paths: str):
+        input_files = glob.glob(input_paths + '*')
+        nopos = False
+        if nopos:
+            input_files = [path for path in input_files if 'nopos' in path]
+        else:
+            input_files = [path for path in input_files if 'nopos' not in path]
+        input_files.sort()
+        logger.info(input_files)
+        logger.info('so many files found!')
+        shuffle = False  # todo
+        logger.info(f"Example entries are shuffled within each file? {shuffle}!")
+        logger.info('Reading text entries!')
+        logger.info(f'Negative instances are selected with the strategy: {self.downsample_strategy}')
+        for path in input_files:
+            logger.info("Reading: %s", path)
+            with open(path, 'r') as f:
+                for line in f:
+                    js = json.loads(line)
+                    if not js:
+                        continue
+                    instances = self.text_entry_js_to_instances(js)
+                    for instance in instances:
+                        yield instance
+
     def generate_text_instances_from_simplified_js_line(self, line):
         js = json.loads(line, object_pairs_hook=collections.OrderedDict)
         # print(js)
         entry = create_example_from_simplified_jsonl(js)
         if not entry:
-            return []
+            return
         doc_info = {
             'id': entry['example_id'],
             'doc_url': entry['document_url'],
@@ -720,7 +841,7 @@ class BertJointNQReaderSimple(DatasetReader):
             answers=entry['answers'],
             context=entry['contexts'],
             first_answer_offset=entry['answers'][0]['span_start'],
-            output_type='text_instance'
+            output_type='text_entry'
         )
         return instances
 
@@ -766,7 +887,6 @@ class BertJointNQReaderSimple(DatasetReader):
                     elif len(instances) != 1:
                         print('CAO' * 20)
                         print(len(instances))
-                        print(entry)
                         # assert False
 
                     if max_to_write:
@@ -875,6 +995,7 @@ class BertJointNQReaderSimple(DatasetReader):
         first_neg = True
         first_pos = True
         additional_metadata = doc_info
+        window_spans = []
         while True:
             tokenized_context_window = tokenized_context[stride_start:]
             tokenized_context_window = tokenized_context_window[:space_for_context]
@@ -924,6 +1045,12 @@ class BertJointNQReaderSimple(DatasetReader):
                     )
                     # yield instance
                     instance_generated.append(instance)
+            elif output_type == 'text_entry':
+                # in text_entry format, we don't care if it is a positive or negative instance
+                window_spans.append((int(window_token_answer_span != None),
+                                     stride_start,
+                                     min(stride_start + space_for_context, len(tokenized_context))
+                                     ))
             else:
                 raise Exception('Unknown output_type')
 
@@ -932,17 +1059,23 @@ class BertJointNQReaderSimple(DatasetReader):
                 break
             stride_start -= self.stride
 
-        # tokenized_entry = {
-        #                 "question": question,
-        #                 "answers": answers,  # todo
-        #                 "context": context,
-        #                 "windows_span": (stride_start, stride_start + space_for_context),  #[a,b)
-        #                 "window_token_answer_span": window_token_answer_span,
-        #                 "additional_metadata": additional_metadata,
-        #                 "tokenized_question": [ (t.text, t.idx, t.text_id) for t in tokenized_question],
-        #                 "tokenized_context_window": [(t.text, t.idx, t.text_id) for t in tokenized_context_window],
-        # }
-        return instance_generated
+
+        if output_type == 'text_instance' or output_type == 'instance':
+            return instance_generated
+        elif output_type == 'text_entry':
+            pos_span, neg_span = passage_sim_score(window_spans, tokenized_context, context, question)
+            tokenized_entry = {
+                "question": question,
+                "answers": answers,  # todo
+                "context": context,
+                "token_answer_span": (token_answer_span_start, token_answer_span_end),
+                "additional_metadata": additional_metadata,
+                "tokenized_question": [(t.text, t.idx, t.text_id) for t in tokenized_question],
+                "tokenized_context": [(t.text, t.idx, t.text_id) for t in tokenized_context],
+                "pos_span": pos_span,
+                "neg_span": neg_span
+            }
+            return tokenized_entry
 
     @overrides
     def text_to_instance(
@@ -1089,3 +1222,4 @@ class BertJointNQReaderSimple(DatasetReader):
             if answer_text == '':
                 print(fields)
         return Instance(fields)
+
