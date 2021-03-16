@@ -37,7 +37,7 @@ class Processor(object):
         self.model_name = model_path[len(prefix):].strip('/')
         logger.info(f"Using model: {self.model_name}")
         self.prediction_output_path = f'/home/sunxy-s18/data/nq/prediction_{self.model_name}.jsonl'
-        logger.info(f"Predition output path will be: {self.model_name}")
+        logger.info(f"Predition output path will be: {self.prediction_output_path}")
         self.dev_data_path = ''
         self.results = None
 
@@ -58,10 +58,17 @@ class Processor(object):
                 for line in f:
                     results.append(json.loads(line))
         self.results = results
+        debug = False
+        if debug:
+            _ = self.generate_prediction_from_data(data_path, unique_id=unique_id, debug=True)
+            with open(self.prediction_output_path, 'w') as fout:
+                for res in results:
+                    fout.write(json.dumps(res, ensure_ascii=False) + '\n')
 
     def confusion(self):
         if not self.results:
             self.predict_and_process()
+        print(self.model_name)
         print('Confusion matrix:')
         y_true = [x['ans_type_gold'] for x in self.results]
         y_pred = [x['ans_type_pred'] for x in self.results]
@@ -70,10 +77,11 @@ class Processor(object):
         if 'ans_type_pred_cls' in self.results[0]:
             print('Prediction with [CLS] token:')
             y_true = [x['ans_type_gold'] for x in self.results]
-            y_pred = [x['ans_type_pred_cls'] for x in self.results]
+            y_pred = [x.get('ans_type_pred_cls',0) for x in self.results]
             print(confusion_matrix(y_true, y_pred))
+        print('')
 
-    def generate_prediction_from_data(self, data_path, unique_id):
+    def generate_prediction_from_data(self, data_path, unique_id, debug=False):
         raise NotImplementedError
 
 
@@ -119,12 +127,15 @@ def compute_predictions(candidates, token_map, result):
     if short_span_orig[0] == -1 or short_span_orig[1] == -1:
         short_span = -1, -1
     else:
-        short_span = (token_map[short_span_orig[0]], token_map[short_span_orig[1]])
+        assert short_span_orig[0] <= short_span_orig[1], (short_span_orig[0], short_span_orig[1])
+        short_span = (token_map[short_span_orig[0]], token_map[short_span_orig[1]] + 1)
+        assert short_span[0] < short_span[1], (short_span[0], short_span[1])
         for c in candidates:
             start = short_span[0]
             end = short_span[1]
             if c["top_level"] and c["start_token"] <= start and c["end_token"] >= end:
                 long_span = c["start_token"], c["end_token"]
+                assert long_span[0] < long_span[1], (long_span[0], long_span[1])
                 break
     nq_eval = {
         "example_id": result['id'],
@@ -153,15 +164,18 @@ class NqProcessor(Processor):
         self.predictor = None
         # self.dev_data_path = '/home/sunxy-s18/data/nq/v1.0-nq-dev-all.jsonl'
         self.dev_data_path = '/home/sunxy-s18/data/nq/simplified_nq_dev_all_7830.jsonl'
+        self.official_prediction_path = f'/home/sunxy-s18/data/nq/official_predictions_{self.model_name}'
         # length of results: 7673
 
-    def generate_prediction_from_data(self, data_path, max_ids=None):
-        if not self.predictor:
-            self.predictor = NQPredictor.from_path(self.model_path, predictor_name='nq',
-                                                   cuda_device=CUDA_DEVICE)
+    def generate_prediction_from_data(self, data_path, unique_id=None, debug=False):
+        if not debug:
+            if not self.predictor:
+                self.predictor = NQPredictor.from_path(self.model_path, predictor_name='nq',
+                                                       cuda_device=CUDA_DEVICE)
         results = []
         logger.info("Reading: %s", data_path)
         not_simplified = 'simplified' not in data_path
+        cnt = 0
         with _open(data_path) as input_file:
             for line in tqdm.tqdm(input_file):
                 js = json.loads(line)
@@ -170,27 +184,68 @@ class NqProcessor(Processor):
                     js = simplify_nq_example(js)
                 entry = create_example_from_simplified_jsonl(js)
                 if not entry:
+                    res = {'id': js['example_id'],
+                           'nq_eval':{
+                                "example_id": js['example_id'],
+                                "long_answer": {
+                                    "start_token": -1,
+                                    "end_token": -1,
+                                    "start_byte": -1,
+                                    "end_byte": -1
+                                },
+                                "long_answer_score": -9999,
+                                "short_answers": [{
+                                    "start_token": -1,
+                                    "end_token": -1,
+                                    "start_byte": -1,
+                                    "end_byte": -1
+                                }],
+                                "short_answers_score": -9999,
+                                "yes_no_answer": "NONE"
+                            },
+                           "ans_type_gold": 5,
+                           "ans_type_pred": 0
+                           }
+                    results.append(res)
                     continue
                 doc_info = {
                     'id': entry['example_id'],
                     'doc_url': entry['document_url'],
                 }
                 entry['doc_info'] = doc_info
-                res = {'id': entry['example_id'],
-                       'doc_url': entry['document_url'],
-                       'question_text': entry['question_text'],
-                       'answers': entry['answers'],
-                       'ans_type_gold': make_nq_answer(entry['answers'][0]['answer_type'])}
-                res.update(self.predictor.predict_json(entry))
-                res['ans_type_pred'] = int(res['best_span_str'] != '')
+                if not debug:
+                    res = {'id': entry['example_id'],
+                           'doc_url': entry['document_url'],
+                           'question_text': entry['question_text'],
+                           'answers': entry['answers'],
+                           'ans_type_gold': make_nq_answer(entry['answers'][0]['answer_type'])}
+                    res.update(self.predictor.predict_json(entry))
+                    res['ans_type_pred'] = int(res['best_span_str'] != '')
+                else:
+                    res = self.results[cnt]
+                    cnt += 1
+                    assert res['id'] == entry['example_id']
                 res['nq_eval'] = compute_predictions(js["long_answer_candidates"],
-                                                          entry["token_map"], res)
-                results.append(res)
-                if max_ids and len(results) > max_ids:
+                                                     entry["token_map"], res)
+                if not debug:
+                    results.append(res)
+                if unique_id and len(results) > unique_id:
                     break
 
         logger.info(f'length of results: {len(results)}')
         return results
+
+    def save_official_prediction(self):
+        if not self.results:
+            self.predict_and_process()
+        official_predictions = {
+            'predictions':[x['nq_eval'] for x in self.results]
+        }
+        # if not os.path.exists(self.official_prediction_path):
+        with open(self.official_prediction_path, 'w') as fout:
+            fout.write(json.dumps(official_predictions, ensure_ascii=False))
+
+
 
 
 def _open(file_path):
@@ -200,7 +255,7 @@ def _open(file_path):
         return open(file_path, 'r', encoding='utf-8')
 
 
-CUDA_DEVICE = 1
+CUDA_DEVICE = 2
 if __name__ == '__main__':
     overwrite = False
     args = sys.argv
@@ -218,30 +273,42 @@ if __name__ == '__main__':
     # processor.predict_and_process(overwrite=False)
     # processor.confusion()
 
+    # # model_name = 'nq_bigfinetune_hasans_bert_0307_3e5_8'
     # test nq
-    # model_name = 'nq_bigfinetune_0308_32_3e5'
+    model_name = 'nq_bigfinetune_0308_32_3e5'
     model_name = 'nq_bigfinetune_0310_24_3e5'
-    # model_name = 'nq_bigfinetune_hasans_bert_0307_3e5_8'
-    model_path = f'/home/sunxy-s18/data/{model_name}/'
-    processor = NqProcessor(model_path)
-    processor.predict_and_process(overwrite=overwrite, unique_id=unique_id)
-    processor.confusion()
-    if '-p' in args:
-        for res in processor.results:
-            if res['ans_type_pred'] != 0 or res['ans_type_pred'] != 0:
-                # print(json.dumps(res, indent=2))
-                sa = res['nq_eval']['short_answers'][0]
-                ga = res['answers'][0]
-                if ga['orig_start'] != sa['start_token'] or ga['orig_end'] != sa['end_token']:
-                    print(res['id'])
-                    print(res['doc_url'])
-                    print('-' * 50)
-                    print('Q:', res['question_text'])
-                    print('-' * 50)
-                    print('Prediction', sa['start_token'], sa['end_token'], res['ans_type_pred'], res['ans_type_pred_cls'])
-                    print('~~~', res['best_span_str'])
-                    print('-' * 30)
-                    print('Gold:', ga['orig_start'], ga['orig_end'], res['ans_type_gold'])
-                    print('~~~', ga['span_text'])
-                    print('=' * 70)
-                    print('\n')
+    model_name = 'nq_bigfinetune_notypeloss_0311_3e5_8'
+
+    model_name = 'nq_bigtextentry_balanced_0313_16'
+    model_name = 'nq_bigtextentry_best_0313_16'
+    model_name = 'nq_bigtextentry_random_0313_16'
+    model_name = 'nq_bigtextentry_worst_0313_16'
+    models = ['nq_bigfinetune_0308_32_3e5','nq_bigfinetune_0310_24_3e5'  ,'nq_bigfinetune_notypeloss_0311_3e5_8'
+            ,'nq_bigtextentry_balanced_0313_16' ,
+              'nq_bigtextentry_best_0313_16', 'nq_bigtextentry_random_0313_16' ,
+              'nq_bigtextentry_worst_0313_16']
+    for model_name in models:
+        model_path = f'/home/sunxy-s18/data/{model_name}/'
+        processor = NqProcessor(model_path)
+        processor.predict_and_process(overwrite=overwrite, unique_id=unique_id)
+        processor.confusion()
+        processor.save_official_prediction()
+        if '-p' in args:
+            for res in processor.results:
+                if res['ans_type_pred'] != 0 or res['ans_type_pred'] != 0:
+                    # print(json.dumps(res, indent=2))
+                    sa = res['nq_eval']['short_answers'][0]
+                    ga = res['answers'][0]
+                    if ga['orig_start'] != sa['start_token'] or ga['orig_end'] != sa['end_token']:
+                        print(res['id'])
+                        print(res['doc_url'])
+                        print('-' * 50)
+                        print('Q:', res['question_text'])
+                        print('-' * 50)
+                        print('Prediction', sa['start_token'], sa['end_token'], res['ans_type_pred'], res['ans_type_pred_cls'])
+                        print('~~~', res['best_span_str'])
+                        print('-' * 30)
+                        print('Gold:', ga['orig_start'], ga['orig_end'], res['ans_type_gold'])
+                        print('~~~', ga['span_text'])
+                        print('=' * 70)
+                        print('\n')
