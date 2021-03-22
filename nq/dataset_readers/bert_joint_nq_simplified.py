@@ -111,6 +111,8 @@ def get_first_annotation(e):
         of the short answer. The end token is exclusive.
     """
     # 选 candidate index 靠前的那个人的标注
+    if 'document_tokens' not in e:
+        e['document_tokens'] = e['document_text'].split(' ')
     positive_annotations = sorted(
         [a for a in e["annotations"] if has_long_answer(a)],
         key=lambda a: a["long_answer"]["candidate_index"])
@@ -130,14 +132,18 @@ def get_first_annotation(e):
             # todo here we only mark one span for all short answers which is combined and not really correct
             return a, idx, (start_token, end_token), "short"
 
+
     for a in positive_annotations:
         idx = a["long_answer"]["candidate_index"]
         start_token = e["long_answer_candidates"][idx]["start_token"]
         end_token = e["long_answer_candidates"][idx]["end_token"] - 1
+        assert a["yes_no_answer"] in ("YES", "NO", "NONE")
         while _HTML_TOKENS_RE.match(e["document_tokens"][start_token]):
             start_token += 1
         while _HTML_TOKENS_RE.match(e["document_tokens"][end_token]):
             end_token -= 1
+        if a["yes_no_answer"] in ("YES", "NO"):
+            return a, idx, (start_token, end_token), a["yes_no_answer"].lower()
         return a, idx, (start_token, end_token), "long"
 
     return None, -1, (-1, -1), "unknown"
@@ -163,7 +169,9 @@ def get_span_text(s, e, doc):
 
 
 def get_text_and_token_offset_within_candidate(e, candidate_idx, a, b):
-    """Converts a token index to the char offset within the !cleaned! candidate. starting from 0!!!! """
+    """Converts a token index to the token offset within the !cleaned! candidate. starting from 0!!!! """
+    # a,b not inclusive on both ends
+
     # no answer case
     if (a, b) == (-1, -1):
         return '', -1, -1
@@ -185,6 +193,13 @@ def get_text_and_token_offset_within_candidate(e, candidate_idx, a, b):
             new_token_offset += 1
 
     return ' '.join(tokens[a1: b1 + 1]), a1, b1
+
+
+def clean_html(text):
+    """Converts a token index to the token offset within the !cleaned! candidate. starting from 0!!!! """
+    tokens = text.split(' ')
+    cleaned_tokens = [t.replace(" ", "") for t in tokens if not _HTML_TOKENS_RE.match(t)]
+    return ' '.join(cleaned_tokens)
 
 
 def get_candidate_type(e, idx):
@@ -464,6 +479,7 @@ class BertJointNQReaderSimple(DatasetReader):
             vocab_len_location="/home/sunxy-s18/data/nq/vocab.len",
             input_type='example',
             output_type='instance',
+            keep_all_pos=False,
             lazy=False,
             **kwargs
     ) -> None:
@@ -491,6 +507,7 @@ class BertJointNQReaderSimple(DatasetReader):
         self.vocab_len_location = vocab_len_location
         self.input_type = input_type
         self.output_type = output_type
+        self.keep_all_pos = keep_all_pos
 
         # workaround for a bug in the transformers library
         if "distilbert" in transformer_model_name:
@@ -723,6 +740,7 @@ class BertJointNQReaderSimple(DatasetReader):
         logger.info('so many files found!')
         shuffle = False  # todo
         logger.info(f"Example entries are shuffled within each file? {shuffle}!")
+        cnt = 0
         for path in input_files:
             logger.info("Reading: %s", path)
             # textins = []
@@ -737,14 +755,20 @@ class BertJointNQReaderSimple(DatasetReader):
                 # for js in textins:
                     instance = self.text_instances_js_to_instances(js)
                     yield instance
+                    cnt += 1
+        logger.info(f'Instance yielded: {cnt}')
 
     def select_span_by_strategy(self, pos_span, neg_span, strategy='best'):
         selected = []
         if pos_span:
-            selected.append(pos_span[0])
+            if self.keep_all_pos:
+                selected.extend(pos_span)
+            else:
+                selected.append(pos_span[0])
         if not neg_span:
             selected = [(x[1], x[2]) for x in selected]
             return selected
+        # todo note here neg_pos_ratio is no longer a ratio, it is just the max neg instance per example
         num_neg_to_keep = self.neg_pos_ratio
         neg_span = [x for x in neg_span if x[1]<x[2]]
         if strategy == 'best':
@@ -814,6 +838,7 @@ class BertJointNQReaderSimple(DatasetReader):
         logger.info(f"Example entries are shuffled within each file? {shuffle}!")
         logger.info('Reading text entries!')
         logger.info(f'Negative instances are selected with the strategy: {self.downsample_strategy}')
+        cnt = 0
         for path in input_files:
             logger.info("Reading: %s", path)
             with open(path, 'r') as f:
@@ -824,6 +849,8 @@ class BertJointNQReaderSimple(DatasetReader):
                     instances = self.text_entry_js_to_instances(js)
                     for instance in instances:
                         yield instance
+                        cnt += 1
+        logger.info(f'Instance yielded: {cnt}')
 
     def generate_text_instances_from_simplified_js_line(self, line):
         js = json.loads(line, object_pairs_hook=collections.OrderedDict)
@@ -1054,10 +1081,18 @@ class BertJointNQReaderSimple(DatasetReader):
             else:
                 raise Exception('Unknown output_type')
 
-            stride_start += space_for_context
-            if stride_start >= len(tokenized_context):
+            # stride in the paper and all other places
+            length = len(tokenized_context) - stride_start
+            length = min(length, space_for_context)
+            if stride_start + length >=len(tokenized_context):
                 break
-            stride_start -= self.stride
+            stride_start += min(length, self.stride)
+
+            # # original stride definition
+            # stride_start += space_for_context
+            # if stride_start >= len(tokenized_context):
+            #     break
+            # stride_start -= self.stride
 
 
         if output_type == 'text_instance' or output_type == 'instance':
