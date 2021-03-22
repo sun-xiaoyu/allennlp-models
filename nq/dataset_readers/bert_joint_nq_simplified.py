@@ -120,13 +120,21 @@ def get_first_annotation(e):
     for a in positive_annotations:
         if a["short_answers"]:
             idx = a["long_answer"]["candidate_index"]
-            sa = sorted([sa for sa in a['short_answers']], key=lambda sa: sa["start_token"])
+            sas = sorted([sa for sa in a['short_answers']], key=lambda sa: sa["start_token"])
+            if len(sas) > 1:
+                # sas = a['short_answers']
+                non_overlapped_sa = [sas[0]]
+                for i in range(1, len(sas)):
+                    if sas[i]['start_token'] >= sas[i-1]['end_token']:
+                        non_overlapped_sa.append(sas[i])
+                a['short_answers'] = non_overlapped_sa
+                sas = non_overlapped_sa
             # 上面的排序是发现有些先标注了后面的span，后标注前面的span，造成输出的 start_token > end_token
             # 所以我们先做个排序
             # 排序是按照start_token,所以排完还应该检查这几个span是否重叠，这里暂时略过看看会不会报错
             # we -1 to make exclusive end_token to inclusive
-            start_token = sa[0]["start_token"]
-            end_token = sa[-1]["end_token"] - 1
+            start_token = sas[0]["start_token"]
+            end_token = sas[-1]["end_token"] - 1
             assert not _HTML_TOKENS_RE.match(e["document_tokens"][start_token])
             assert not _HTML_TOKENS_RE.match(e["document_tokens"][end_token])
             # todo here we only mark one span for all short answers which is combined and not really correct
@@ -170,7 +178,9 @@ def get_span_text(s, e, doc):
 
 def get_text_and_token_offset_within_candidate(e, candidate_idx, a, b):
     """Converts a token index to the token offset within the !cleaned! candidate. starting from 0!!!! """
-    # a,b not inclusive on both ends
+    # a,b needs to be inclusive on both ends, the same with returned a1,b1
+    # [a, b] and [a1, b1]
+
 
     # no answer case
     if (a, b) == (-1, -1):
