@@ -19,7 +19,7 @@ class NQPredictor(Predictor):
 
     def __init__(self, model: Model, dataset_reader: DatasetReader) -> None:
         super(NQPredictor, self).__init__(model, dataset_reader)
-        self._next_qid = 0
+        # self._next_qid = 0
 
     def predict(self, question: str, passage: str) -> JsonDict:
         """
@@ -65,7 +65,7 @@ class NQPredictor(Predictor):
                 train=False
             )
         )
-        self._next_qid += 1
+        # self._next_qid += 1
         return result
 
     @overrides
@@ -102,11 +102,12 @@ class NQPredictor(Predictor):
                 outputs.extend(res)
                 batch_start += batch_size
 
-        scores = [x['best_span_scores'] for x in outputs]
-        max_score = max(scores)
-        max_score_idx = scores.index(max_score)
-
-        return [sanitize(outputs[max_score_idx])]
+        # scores = [x['best_span_scores'] for x in outputs]
+        outputs.sort(key=lambda x:x['best_span_scores'], reverse=True)
+        for output in outputs:
+            if output['best_span_str'] != '':
+                return [sanitize(output)]
+        return [sanitize(outputs[-1])]
         # todo important assumption!
         # 这里我们假设调用这个函数的都是同一个example生成的instance。所以用了上面的代码注释掉了下面的
         # group outputs with the same question id
