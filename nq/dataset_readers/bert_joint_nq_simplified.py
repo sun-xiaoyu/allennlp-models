@@ -13,7 +13,7 @@ import scipy as sp
 from typing import Any, Dict, List, Tuple, Optional, Iterable
 
 from allennlp.common.util import sanitize_wordpiece
-from allennlp.data.fields import MetadataField, TextField, SpanField, LabelField
+from allennlp.data.fields import MetadataField, TextField, SpanField, LabelField, SequenceLabelField, ArrayField
 from overrides import overrides
 
 from allennlp.common.file_utils import cached_path, open_compressed
@@ -491,6 +491,9 @@ class BertJointNQReaderSimple(DatasetReader):
             output_type='instance',
             keep_all_pos=False,
             lazy=False,
+            allow_ans_type=None,
+            standard_type_id=False,
+            allennlp_type_id=False,
             **kwargs
     ) -> None:
         super().__init__(lazy=lazy, **kwargs)
@@ -518,6 +521,24 @@ class BertJointNQReaderSimple(DatasetReader):
         self.input_type = input_type
         self.output_type = output_type
         self.keep_all_pos = keep_all_pos
+        self.allow_ans_type = allow_ans_type
+        self.question_type_id = 1
+        self.context_type_id = 1
+
+        self.standard_type_id = standard_type_id
+        self.allennlp_type_id = allennlp_type_id
+        if self.standard_type_id and self.allennlp_type_id:
+            raise Exception('Can only choose one way of encoding type_id!')
+        if self.standard_type_id:
+            self.question_type_id = 0
+            self.context_type_id = 1
+            self.non_content_type_id = 0
+        elif self.allennlp_type_id:
+            self.question_type_id = 1
+            self.context_type_id = 0
+            self.non_content_type_id = 1
+        logger.info(f'We use standard type_id as in the BERT paper: {self.standard_type_id}')
+        logger.info(f'We use type_id the allennp way: {self.allennlp_type_id}')
 
         # workaround for a bug in the transformers library
         if "distilbert" in transformer_model_name:
@@ -714,10 +735,10 @@ class BertJointNQReaderSimple(DatasetReader):
 
     def text_instances_js_to_instances(self, js):
         tokenized_context_window = \
-            [Token(t[0], idx=t[1], text_id=t[2], type_id=self.non_content_type_id)
+            [Token(t[0], idx=t[1], text_id=t[2], type_id=self.context_type_id)
              for t in js['tokenized_context_window']]
         tokenized_question = \
-            [Token(t[0], idx=t[1], text_id=t[2], type_id=self.non_content_type_id)
+            [Token(t[0], idx=t[1], text_id=t[2], type_id=self.question_type_id)
              for t in js['tokenized_question']]
         additional_metadata = js['additional_metadata']
         question = js['question']
@@ -798,10 +819,11 @@ class BertJointNQReaderSimple(DatasetReader):
     def text_entry_js_to_instances(self, js) -> List[Instance]:
         instances = []
         tokenized_context = \
-            [Token(t[0], idx=t[1], text_id=t[2], type_id=self.non_content_type_id)
+            [Token(t[0], idx=t[1], text_id=t[2], type_id=self.context_type_id,
+                   tag_=_SPECIAL_TOKENS_RE.match(t[0]) is not None)
              for t in js['tokenized_context']]
         tokenized_question = \
-            [Token(t[0], idx=t[1], text_id=t[2], type_id=self.non_content_type_id)
+            [Token(t[0], idx=t[1], text_id=t[2], type_id=self.question_type_id)
              for t in js['tokenized_question']]
         additional_metadata = js['additional_metadata']
         question = js['question']
@@ -810,6 +832,16 @@ class BertJointNQReaderSimple(DatasetReader):
         token_answer_span = js['token_answer_span']
         selected_spans = self.select_span_by_strategy(js['pos_span'], js['neg_span'],
                                                       strategy=self.downsample_strategy)
+        if self.allow_ans_type:
+            if self.allow_ans_type == '01':
+                if answers[0]['answer_type'] in ['long', 'yes', 'no']:
+                    answers[0]['answer_type'] = 'short'
+                    # logger.info('here')
+            elif self.allow_ans_type == '012':
+                if answers[0]['answer_type'] in ['yes', 'no']:
+                    answers[0]['answer_type'] = 'long'
+                    logger.info('here')
+
         for span in selected_spans:
             tokenized_context_window = tokenized_context[span[0]:span[1]]
             if len(tokenized_context_window) == 0:
@@ -848,6 +880,7 @@ class BertJointNQReaderSimple(DatasetReader):
         logger.info(f"Example entries are shuffled within each file? {shuffle}!")
         logger.info('Reading text entries!')
         logger.info(f'Negative instances are selected with the strategy: {self.downsample_strategy}')
+        logger.info(f'AnswerType restriction: {self.allow_ans_type}')
         cnt = 0
         for path in input_files:
             logger.info("Reading: %s", path)
@@ -1177,31 +1210,23 @@ class BertJointNQReaderSimple(DatasetReader):
             text_id=self._tokenizer.tokenizer.sep_token_id,
             type_id=self.non_content_type_id,
         )
+        sep_token1 = None
+        if self.standard_type_id:
+            sep_token1 = Token(
+                self._tokenizer.tokenizer.sep_token,
+                text_id=self._tokenizer.tokenizer.sep_token_id,
+                type_id=1,
+            )
         # noans_token = Token(
         #     '[NoLongAnswer]',
         #     idx=None,
         #     text_id=9,
         #     type_id=self.non_content_type_id,
         # )
+        qwc = [cls_token] + tokenized_question + [sep_token, sep_token] + \
+              window_context_wordpiece_tokens + [sep_token1 or sep_token]
+        question_with_context_field = TextField(qwc, self._token_indexers,)
 
-        question_with_context_field = TextField(
-            (
-                    [cls_token]
-                    + tokenized_question
-                    + [sep_token, sep_token]
-                    # + [sep_token]
-                    # + [noans_token]
-                    + window_context_wordpiece_tokens
-                    + [sep_token]
-            ),
-            self._token_indexers,
-        )
-
-        # qwc = ' '.join([t.text for t in ([cls_token]
-        #                                  + tokenized_question
-        #                                  + [sep_token, sep_token]
-        #                                  + window_context_wordpiece_tokens
-        #                                  + [sep_token])])
         fields["question_with_context"] = question_with_context_field
         # start_of_context = 1 + len(tokenized_question) + 2 + 1
         start_of_context = 1 + len(tokenized_question) + 2
