@@ -9,17 +9,19 @@ from allennlp.common.util import sanitize_wordpiece
 from allennlp.modules.text_field_embedders import BasicTextFieldEmbedder
 from allennlp.modules.token_embedders import PretrainedTransformerEmbedder
 from allennlp.modules import FeedForward
+from allennlp.modules.seq2vec_encoders import CnnEncoder
 from allennlp.nn.util import get_token_ids_from_text_field_tensors
 from torch import nn
 
 from allennlp.data import Vocabulary
 from allennlp.models.model import Model
-from allennlp.nn import util
+from allennlp.nn import util, Activation
 from allennlp.training.metrics import BooleanAccuracy, CategoricalAccuracy
 from torch.nn.functional import cross_entropy
 
 from nq.models_utils import get_best_span
 from nq.squad_em_and_f1 import SquadEmAndF1
+from allennlp_models.lm.bidirectional_lm_transformer import MultiHeadedAttention, make_model
 
 logger = logging.getLogger(__name__)
 
@@ -49,9 +51,12 @@ class BertJointNQ(Model):
     """
 
     def __init__(
-        self, vocab: Vocabulary, classifier_feedforward: FeedForward,
+        self, vocab: Vocabulary, classifier_feedforward: Optional[FeedForward] = None,
             transformer_model_name: str = "bert-base-cased",
-            vocab_len_location="/home/sunxy-s18/data/nq/vocab.len", **kwargs,
+            vocab_len_location="/home/sunxy-s18/data/nq/vocab.len",
+            option: str = 'combine2',
+            # init_all: bool = False
+            **kwargs,
     ) -> None:
         super().__init__(vocab, **kwargs)
         self._text_field_embedder = BasicTextFieldEmbedder(
@@ -61,7 +66,53 @@ class BertJointNQ(Model):
         logger.info('wtf' * 20)
         logger.info('wtf' * 20)
         self._linear_layer = nn.Linear(self._text_field_embedder.get_output_dim(), 2)
-        self.classifier_feedforward = classifier_feedforward
+
+        '''
+        cnn: 用cnn对指针网络、是否答案做特征抽取
+        transformer: 
+        combine: 加了三层网络 输入771
+        combine1: 只保留一层linear网络 输入771
+        combine2：理论上应该和combine1一样，只不过用的网络不是output_layer而是 classifier_feedforward
+        combine3: 先把cls的768维压缩到12维，然后和3维并到一起。15维一起输入一个[15,3]的linear
+        '''
+        init_all = False
+        options = ['original', 'cnn', 'transformer', 'combine2', 'no_type_loss', 'combine3']
+        self.option = option
+        if self.option == 'original' or init_all:
+            if classifier_feedforward:
+                self.classifier_feedforward = classifier_feedforward
+                logger.warning('We are using fine-tuned model!')
+                logger.info(classifier_feedforward)
+            else:
+                self.classifier_feedforward = FeedForward(input_dim=768, num_layers=1, hidden_dims=[5],
+                                                 activations=[Activation.by_name("linear")()])
+        if self.option == 'cnn' or init_all:
+            self.cnn = CnnEncoder(embedding_dim=4, num_filters=3, ngram_filter_sizes=(2,))
+            self.cnn_output_linear = nn.Linear(3, 3, bias=True)
+        if self.option == 'transformer' or init_all:
+            self.cnn = None
+            self.ans_type_predict_layer = make_model(num_layers=1, input_size=16, hidden_size=42, heads=4)
+            self.pre_attention = FeedForward(input_dim=4, num_layers=1, hidden_dims=16,
+                                             activations=Activation.by_name("relu")(), dropout=0.1)
+            self.transformer_output_linear = nn.Linear(16, 3, bias=True)
+        if self.option == 'combine2' or init_all:
+            self.cnn = CnnEncoder(embedding_dim=4, num_filters=3, ngram_filter_sizes=(2,))
+            self.combine2_output_linear = FeedForward(input_dim=771, num_layers=1, hidden_dims=[5],
+                                                      activations=Activation.by_name("linear")())
+        if self.option == 'combine3' or init_all:
+            self.cnn = CnnEncoder(embedding_dim=4, num_filters=3, ngram_filter_sizes=(2,))
+            self.combine3_cls_pooler = FeedForward(input_dim=768, num_layers=1, hidden_dims=[12],
+                                                   activations=Activation.by_name("relu")(), dropout=0.1)
+            self.combine3_output_linear = FeedForward(input_dim=15, num_layers=1, hidden_dims=[5],
+                                                      activations=Activation.by_name("linear")())
+            # self.output_linear = FeedForward(input_dim=771, num_layers=3, hidden_dims=[128,16,3],
+            #                              activations=[Activation.by_name("relu")(), Activation.by_name("relu")(),
+            #                                           Activation.by_name("linear")()], dropout=0.1)
+        #     self.output_linear = FeedForward(input_dim=771, num_layers=1, hidden_dims=[5],
+        #                                  activations=[Activation.by_name("linear")()])
+        # else:
+        #     self.output_linear = nn.Linear(3,3,bias=True)
+
 
         self._span_start_accuracy = CategoricalAccuracy()
         self._span_end_accuracy = CategoricalAccuracy()
@@ -78,11 +129,16 @@ class BertJointNQ(Model):
         logger.info('yeah' * 20)
         logger.info('yeah' * 20)
         logger.info('yeah' * 20)
+        self.no_type_loss = self.option == 'no_type_loss'
+        logger.info(f'No type_loss**: {self.no_type_loss}')
+        logger.info(f'We use model architecture as: {self.option}')
+
 
     def forward(  # type: ignore
         self,
         question_with_context: Dict[str, Dict[str, torch.LongTensor]],
         context_span: torch.IntTensor,
+        sptk: Optional[torch.IntTensor] = None,
         answer_span: Optional[torch.IntTensor] = None,
         answer_type: Optional[torch.IntTensor] = None,
         metadata: List[Dict[str, Any]] = None,
@@ -134,6 +190,7 @@ class BertJointNQ(Model):
             If sufficient metadata was provided for the instances in the batch, we also return the
             string from the original passage that the model thinks is the best answer to the
             question.
+            :param sptk:
         """
         # print(question_with_context)
         # print(question_with_context['tokens'])
@@ -144,6 +201,8 @@ class BertJointNQ(Model):
         # pickle.dump(question_with_context['tokens']['token_ids'], open('/home/sunxy-s18/data/bad_tensor','wb'))
         logger.debug(f'Batch size: {context_span.size()[0]}')
         embedded_question = self._text_field_embedder(question_with_context) # TODO ERROR HERE
+
+
         # print("embedded_question", embedded_question.shape)
         # raise Exception('unacceptable!')
         # shape: (batch_size, sequence_length, 2)
@@ -181,6 +240,7 @@ class BertJointNQ(Model):
         )
         span_end_logits = util.replace_masked_values(span_end_logits, possible_answer_mask, -1e32)
 
+
         span_start_probs = torch.nn.functional.softmax(span_start_logits, dim=-1)
         span_end_probs = torch.nn.functional.softmax(span_end_logits, dim=-1)
         # Now calculate the best span.
@@ -195,10 +255,6 @@ class BertJointNQ(Model):
                            span_start_logits[:,0].unsqueeze(1)- span_end_logits[:,0].unsqueeze(1)
         best_span_scores = best_span_scores.squeeze(1)
         bert_cls_vec = embedded_question[:, 0, :]
-        type_logits = self.classifier_feedforward(bert_cls_vec)
-        type_probs = torch.nn.functional.softmax(type_logits, dim=-1)
-        argmax_indices = torch.argmax(type_probs, dim=-1)
-
         output_dict = {
             # "span_start_logits": span_start_logits,
             # "span_start_probs": span_start_probs,
@@ -206,10 +262,67 @@ class BertJointNQ(Model):
             # "span_end_probs": span_end_probs,
             "best_span": best_spans,
             "best_span_scores": best_span_scores,
-            # "answer_type_logits": type_logits,
-            # "answer_type_probs": type_probs,
-            "ans_type_pred_cls": argmax_indices
         }
+
+        # get extra feature here
+        if not self.no_type_loss:
+            if self.option in ['cnn', 'transformer', 'combine2', 'combine3']:
+                input_ids = question_with_context['tokens']['token_ids']
+                batch_size, seq_length = input_ids.shape
+                device = input_ids.device
+                if sptk is None:
+                    sptk = torch.zeros([batch_size, seq_length, 1], dtype=torch.float, device=device)
+                else:
+                    sptk = sptk.unsqueeze(-1)
+
+                # todo change
+                # compute pooled for
+                if self.option == 'transformer':
+                    position_ids = torch.arange(seq_length, dtype=torch.float, device=device)
+                    position_ids = position_ids.unsqueeze(0).expand(input_ids.shape).unsqueeze(-1)
+                    type_vec_for_transformer = torch.cat((logits, position_ids, sptk), dim=2)
+                    att_mask = torch.zeros([batch_size, seq_length, seq_length], dtype=torch.bool, device=device)
+                    for i, (start, end) in enumerate(context_span):
+                        att_mask[i, start: end + 1, :] = True
+                        att_mask[i, :, start: end + 1] = True
+                        # Also unmask the [CLS] token since that token is used to indicate that
+                        # the question is impossible.
+                        att_mask[i, 0, :] = True
+                        att_mask[i, :, 0] = True
+
+                    type_vec = self.pre_attention(type_vec_for_transformer)
+                    transformer_logits = self.ans_type_predict_layer(type_vec, att_mask)
+                    pooled = transformer_logits[:, 0, :].squeeze(1)
+                    type_logits = self.transformer_output_linear(pooled)
+                else:
+                    cls_marker = torch.zeros([batch_size, seq_length, 1], dtype=torch.float, device=device)
+                    cls_marker[:, 0] = True
+                    type_vec_for_cnn = torch.cat((logits, sptk, cls_marker), dim=2)
+                    pooled = self.cnn(type_vec_for_cnn, possible_answer_mask)
+                    if self.option == 'combine2':
+                        bert_cls_vec = torch.cat([pooled, bert_cls_vec], dim=1)
+                        type_logits = self.combine2_output_linear(bert_cls_vec)
+                    elif self.option == 'combine3':
+                        cls_pooled = self.combine3_cls_pooler(bert_cls_vec)
+                        pooled = torch.cat([cls_pooled, pooled], dim=-1)
+                        type_logits = self.combine3_output_linear(pooled)
+                    else:
+                        type_logits = self.cnn_output_linear(pooled)
+
+            else: # self.option == 'original':
+                type_logits = self.classifier_feedforward(bert_cls_vec)
+
+                # todo end change
+
+            type_probs = torch.nn.functional.softmax(type_logits, dim=-1)
+            argmax_indices = torch.argmax(type_probs, dim=-1)
+            output_dict['answer_type_logits'] = type_logits
+            output_dict["answer_type_probs"] = type_probs
+            output_dict["ans_type_pred_cls"] = argmax_indices
+
+
+        # todo it was here
+
 
         # Compute the loss for training.
         if answer_span is not None:
@@ -234,14 +347,16 @@ class BertJointNQ(Model):
                 logger.critical("span_end: %r", span_end)
                 assert False
 
-            type_loss = cross_entropy(type_logits, answer_type)
-            ## logger.info(f'======start_loss: {start_loss}, end_loss: {end_loss}, type_loss: {type_loss}======')
-            # loss = start_loss + end_loss
-            loss = start_loss + end_loss + type_loss
+            if self.no_type_loss:
+                loss = start_loss + end_loss
+            else:
+                type_loss = cross_entropy(type_logits, answer_type)
+                loss = start_loss + end_loss + type_loss
+                self._ans_type_accuracy(type_logits, answer_type)
 
             self._span_start_accuracy(span_start_logits, span_start)
             self._span_end_accuracy(span_end_logits, span_end)
-            self._ans_type_accuracy(type_probs, answer_type)
+
 
             output_dict["loss"] = loss
 

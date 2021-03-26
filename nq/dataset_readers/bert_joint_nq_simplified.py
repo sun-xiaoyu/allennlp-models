@@ -599,15 +599,6 @@ class BertJointNQReaderSimple(DatasetReader):
                 with open(self.vocab_len_location, 'w') as f:
                     f.write(str(len(self.tokenizer)))
 
-        def elmosim(instance, context, question):
-            return 1
-            # meta = instance.fields['metadata'].metadata
-            # s = meta['context_span_orig'][0]
-            # e = meta['context_span_orig'][1]
-            # e1 = np.squeeze(ee.embed_sentence(question)[2, 0, :])
-            # e2 = np.squeeze(ee.embed_sentence(context[s:e])[2, 0, :])
-            # return sp.spatial.distance.cosine(e1, e2)
-
         yielded_question_count = 0
         questions_with_more_than_one_instance = 0
         instances_yielded_num = []
@@ -796,6 +787,7 @@ class BertJointNQReaderSimple(DatasetReader):
                 selected.extend(pos_span)
             else:
                 selected.append(pos_span[0])
+        # pos_yielded = len(selected)
         if not neg_span:
             selected = [(x[1], x[2]) for x in selected]
             return selected
@@ -813,6 +805,15 @@ class BertJointNQReaderSimple(DatasetReader):
         elif strategy == 'balanced':
             selected.append(neg_span[0])
             selected.extend(random.sample(neg_span[1:], num_neg_to_keep - 1))
+        elif strategy == 'new':
+            for span in neg_span:
+                if pos_span and random.random() < 0.01:
+                    selected.append(span)
+                    # logger.info('answerable')
+                if len(pos_span) == 0 and random.random() < 0.04:
+                    selected.append(span)
+                    # logger.info('not answerable')
+        # neg_yielded = len(selected) - pos_yielded
         selected = [(x[1], x[2]) for x in selected]
         return selected
 
@@ -840,7 +841,7 @@ class BertJointNQReaderSimple(DatasetReader):
             elif self.allow_ans_type == '012':
                 if answers[0]['answer_type'] in ['yes', 'no']:
                     answers[0]['answer_type'] = 'long'
-                    logger.info('here')
+                    # logger.info('here')
 
         for span in selected_spans:
             tokenized_context_window = tokenized_context[span[0]:span[1]]
@@ -1226,6 +1227,9 @@ class BertJointNQReaderSimple(DatasetReader):
         qwc = [cls_token] + tokenized_question + [sep_token, sep_token] + \
               window_context_wordpiece_tokens + [sep_token1 or sep_token]
         question_with_context_field = TextField(qwc, self._token_indexers,)
+
+        sptk = np.array([int(t.tag_) if t.tag_ else 0 for t in qwc])
+        fields['sptk'] = ArrayField(sptk)
 
         fields["question_with_context"] = question_with_context_field
         # start_of_context = 1 + len(tokenized_question) + 2 + 1
