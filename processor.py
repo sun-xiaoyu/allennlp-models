@@ -19,6 +19,10 @@ logging.basicConfig(
 
 logger = logging.getLogger(__name__)
 
+DEBUGGGGGGGGGG = False
+CUDA_DEVICE = 3
+YN_TYPE_DICT = {2: 'NONE', 3: 'YES', 4: 'NO'}
+
 
 class Processor(object):
     """
@@ -121,7 +125,7 @@ class SquadProcessor(Processor):
         return results
 
 
-def compute_predictions(candidates, token_map, result):
+def compute_predictions(candidates, token_map, result, yesno:str = "NONE"):
     """Converts an example into an NQEval object for evaluation."""
     # 从来自多个窗口的候选span中排序打分，得出最好的short span，并且从list中找到包含他的long span
     # 这里的start end的选择是从整篇文章中来的。 而我自己的做法是，每个window选出一个最好的start,end 然后window之间比较    predictions = []
@@ -141,6 +145,8 @@ def compute_predictions(candidates, token_map, result):
                 long_span = c["start_token"], c["end_token"]
                 assert long_span[0] < long_span[1], (long_span[0], long_span[1])
                 break
+    if yesno != 'NONE':
+        short_span = -1, -1
     nq_eval = {
         "example_id": result['id'],
         "long_answer": {
@@ -157,13 +163,13 @@ def compute_predictions(candidates, token_map, result):
             "end_byte": -1
         }],
         "short_answers_score": score,
-        "yes_no_answer": "NONE"
+        "yes_no_answer": yesno,
     }
     return nq_eval
 
 
 class NqProcessor(Processor):
-    def __init__(self, model_path):
+    def __init__(self, model_path, predict_yesno = True):
         super().__init__(model_path)
         self.predictor = None
         # self.dev_data_path = '/home/sunxy-s18/data/nq/v1.0-nq-dev-all.jsonl'
@@ -172,16 +178,29 @@ class NqProcessor(Processor):
         # Don't predict noanswer unless noanswer in every window
         self.official_prediction_path = f'/home/sunxy-s18/data/nq/official_predictions_new_{self.model_name}'
         # length of results: 7673
+        self.predict_yesno = predict_yesno
+        self.yn_processor = None
+        self.yesno_predictor_path = '/home/sunxy-s18/data/yesno_0321'
+        if self.predict_yesno:
+            self.prediction_output_path = self.prediction_output_path.strip('.jsonl') + '_yesno.jsonl'
+            self.official_prediction_path = self.official_prediction_path + '_yesno'
+            logger.info(f"Actually, prediction output path will be: {self.prediction_output_path}")
+
 
     def generate_prediction_from_data(self, data_path, unique_id=None, debug=False):
         if not debug:
             if not self.predictor:
                 self.predictor = NQPredictor.from_path(self.model_path, predictor_name='nq',
                                                        cuda_device=CUDA_DEVICE)
+            if self.predict_yesno:
+                if not self.yn_processor:
+                    self.yn_processor = QatypeProcessor(self.yesno_predictor_path)
+                    self.yn_processor.load()
         results = []
         logger.info("Reading: %s", data_path)
         not_simplified = 'simplified' not in data_path
         cnt = 0
+        logger.info(f"prediction output path will be: {self.prediction_output_path}")
         with _open(data_path) as input_file:
             for line in tqdm.tqdm(input_file):
                 js = json.loads(line)
@@ -231,8 +250,14 @@ class NqProcessor(Processor):
                     res = self.results[cnt]
                     cnt += 1
                     assert res['id'] == entry['example_id']
+                yesno = 'NONE'
+                if debug:
+                    yesno = res['nq_eval']['yes_no_answer']
+                elif self.predict_yesno:
+                    yesno = self.yn_processor.predict_yn(res['question_text'], res['best_span_str'])
                 res['nq_eval'] = compute_predictions(js["long_answer_candidates"],
-                                                     entry["token_map"], res)
+                                                     entry["token_map"], res, yesno=yesno)
+
                 if not debug:
                     results.append(res)
                 if unique_id and len(results) > unique_id:
@@ -250,6 +275,8 @@ class NqProcessor(Processor):
         # if not os.path.exists(self.official_prediction_path):
         with open(self.official_prediction_path, 'w') as fout:
             fout.write(json.dumps(official_predictions, ensure_ascii=False))
+        logger.info('official prediction saved at:' + self.official_prediction_path)
+
 
 def _open(file_path):
     if file_path.endswith(".gz"):
@@ -334,5 +361,18 @@ class QatypeProcessor(Processor):
         max_accuracy_threshold = thresholds[accuracies.argmax()]
         print(max_accuracy, max_accuracy_threshold, min_acc)
 
-DEBUGGGGGGGGGG = False
-CUDA_DEVICE = 2
+    def predict_yn(self, question, answer):
+        if not self.predictor:
+            self.predictor = QatypePredictor.from_path(self.model_path,
+                                                            predictor_name='qatype',
+                                                            cuda_device=CUDA_DEVICE)
+        res = self.predictor.predict_qa(question, answer)
+        return YN_TYPE_DICT[int(res["label"])]
+
+    def load(self):
+        if not self.predictor:
+            self.predictor = QatypePredictor.from_path(self.model_path,
+                                                       predictor_name='qatype',
+                                                       cuda_device=CUDA_DEVICE)
+
+
