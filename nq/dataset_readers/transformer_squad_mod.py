@@ -71,6 +71,8 @@ class TransformerSquadReaderMod(DatasetReader):
         stride: int = 128,
         skip_invalid_examples: bool = False,
         max_query_length: int = 64,
+        standard_type_id: bool = False,
+        allennlp_type_id: bool = True,
         **kwargs
     ) -> None:
         super().__init__(**kwargs)
@@ -82,12 +84,28 @@ class TransformerSquadReaderMod(DatasetReader):
         self.stride = stride
         self.skip_invalid_examples = skip_invalid_examples
         self.max_query_length = max_query_length
-        self.non_content_type_id = max(
-            self._tokenizer.tokenizer.encode_plus("left", "right", return_token_type_ids=True)[
-                "token_type_ids"
-            ]
-        )
+        # self.non_content_type_id = max(
+        #     self._tokenizer.tokenizer.encode_plus("left", "right", return_token_type_ids=True)[
+        #         "token_type_ids"
+        #     ]
+        # )
+        self.question_type_id = 1
+        self.context_type_id = 1
 
+        self.standard_type_id = standard_type_id
+        self.allennlp_type_id = allennlp_type_id
+        if self.standard_type_id and self.allennlp_type_id:
+            raise Exception('Can only choose one way of encoding type_id!')
+        if self.standard_type_id:
+            self.question_type_id = 0
+            self.context_type_id = 1
+            self.non_content_type_id = 0
+        elif self.allennlp_type_id:
+            self.question_type_id = 1
+            self.context_type_id = 0
+            self.non_content_type_id = 1
+        logger.info(f'We use standard type_id as in the BERT paper: {self.standard_type_id}')
+        logger.info(f'We use type_id the allennp way: {self.allennlp_type_id}')
         # workaround for a bug in the transformers library
         if "distilbert" in transformer_model_name:
             self.non_content_type_id = 0
@@ -189,6 +207,8 @@ class TransformerSquadReaderMod(DatasetReader):
             if wordpiece.idx is not None:
                 wordpiece.idx += token_start
             tokenized_context.append(wordpiece)
+        for token in tokenized_context:
+            token.type_id = self.context_type_id
 
         if first_answer_offset is None:
             (token_answer_span_start, token_answer_span_end) = (-1, -1)
@@ -234,7 +254,7 @@ class TransformerSquadReaderMod(DatasetReader):
         tokenized_question = self._tokenizer.tokenize(question)
         tokenized_question = tokenized_question[: self.max_query_length]
         for token in tokenized_question:
-            token.type_id = self.non_content_type_id
+            token.type_id = self.question_type_id
             token.idx = None
 
         # Stride over the context, making instances
@@ -298,13 +318,21 @@ class TransformerSquadReaderMod(DatasetReader):
             type_id=self.non_content_type_id,
         )
 
+        sep_token1 = None
+        if self.standard_type_id:
+            sep_token1 = Token(
+                self._tokenizer.tokenizer.sep_token,
+                text_id=self._tokenizer.tokenizer.sep_token_id,
+                type_id=1,
+                )
+
         question_field = TextField(
             (
                 [cls_token]
                 + tokenized_question
                 + [sep_token, sep_token]
                 + tokenized_context
-                + [sep_token]
+                + [sep_token1 or sep_token]
             ),
             self._token_indexers,
         )

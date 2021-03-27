@@ -54,7 +54,7 @@ class BertJointNQ(Model):
         self, vocab: Vocabulary, classifier_feedforward: Optional[FeedForward] = None,
             transformer_model_name: str = "bert-base-cased",
             vocab_len_location="/home/sunxy-s18/data/nq/vocab.len",
-            option: str = 'combine2',
+            option: str = 'no_type_loss',
             # init_all: bool = False
             **kwargs,
     ) -> None:
@@ -371,7 +371,8 @@ class BertJointNQ(Model):
         # get best span str & best span orig
         if metadata is not None:
             best_spans = best_spans.detach().cpu().numpy()
-            answer_type_preds = output_dict['ans_type_pred_cls'].detach().cpu().numpy()
+            if not self.no_type_loss and 'ans_type_pred_cls' in output_dict:
+                answer_type_preds = output_dict['ans_type_pred_cls'].detach().cpu().numpy()
             output_dict["best_span_str"] = []
             output_dict["best_span_orig"] = []
             for i, (metadata_entry, best_span) in enumerate(zip(metadata, best_spans)):

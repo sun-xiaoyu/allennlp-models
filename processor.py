@@ -143,6 +143,8 @@ def compute_predictions(candidates, token_map, result, yesno:str = "NONE"):
             end = short_span[1]
             if c["top_level"] and c["start_token"] <= start and c["end_token"] >= end:
                 long_span = c["start_token"], c["end_token"]
+                if long_span[0] == short_span[0] - 1 and long_span[1] == short_span[0] + 1:
+                    short_span = -1, -1
                 assert long_span[0] < long_span[1], (long_span[0], long_span[1])
                 break
     if yesno != 'NONE':
