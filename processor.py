@@ -136,7 +136,17 @@ def compute_predictions(candidates, token_map, result, yesno:str = "NONE"):
         short_span = -1, -1
     else:
         assert short_span_orig[0] <= short_span_orig[1], (short_span_orig[0], short_span_orig[1])
-        short_span = (token_map[short_span_orig[0]], token_map[short_span_orig[1]] + 1)
+        s = short_span_orig[0]
+        e = short_span_orig[1]
+        while token_map[s] == -1 and s + 1 < len(token_map):
+            s += 1
+        while token_map[e] == -1 and e - 1 >= 0:
+            e -= 1
+        if token_map[s] == -1 or token_map[e] == -1:
+            short_span = -1, -1
+            logger.warning(f"Can't map token back to original uncleaned text! {result['id']}, {short_span_orig} ")
+        else:
+            short_span = (token_map[s], token_map[e] + 1)
         assert short_span[0] < short_span[1], (short_span[0], short_span[1])
         for c in candidates:
             start = short_span[0]
@@ -204,8 +214,9 @@ class NqProcessor(Processor):
         cnt = 0
         logger.info(f"prediction output path will be: {self.prediction_output_path}")
         with _open(data_path) as input_file:
-            for line in tqdm.tqdm(input_file):
-                js = json.loads(line)
+            lines = input_file.readlines()
+            for line in tqdm.tqdm(lines):
+                js = json.loads(line.strip('\n'))
                 logging.debug('I was here')
                 if not_simplified:
                     js = simplify_nq_example(js)
