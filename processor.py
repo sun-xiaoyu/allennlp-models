@@ -20,7 +20,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 DEBUGGGGGGGGGG = False
-CUDA_DEVICE = 3
+CUDA_DEVICE = 2
 YN_TYPE_DICT = {2: 'NONE', 3: 'YES', 4: 'NO'}
 
 
@@ -155,6 +155,7 @@ def compute_predictions(candidates, token_map, result, yesno:str = "NONE"):
                 long_span = c["start_token"], c["end_token"]
                 if long_span[0] == short_span[0] - 1 and long_span[1] == short_span[0] + 1:
                     short_span = -1, -1
+                    print("it's working")
                 assert long_span[0] < long_span[1], (long_span[0], long_span[1])
                 break
     if yesno != 'NONE':
@@ -180,6 +181,31 @@ def compute_predictions(candidates, token_map, result, yesno:str = "NONE"):
     return nq_eval
 
 
+def no_ans_nq_eval(id):
+    return {'id': id,
+            'nq_eval':{
+                "example_id": id,
+                "long_answer": {
+                    "start_token": -1,
+                    "end_token": -1,
+                    "start_byte": -1,
+                    "end_byte": -1
+                },
+                "long_answer_score": -9999,
+                "short_answers": [{
+                    "start_token": -1,
+                    "end_token": -1,
+                    "start_byte": -1,
+                    "end_byte": -1
+                }],
+                "short_answers_score": -9999,
+                "yes_no_answer": "NONE"
+            },
+            "ans_type_gold": 5,
+            "ans_type_pred": 0
+            }
+
+
 class NqProcessor(Processor):
     def __init__(self, model_path, predict_yesno = True):
         super().__init__(model_path)
@@ -193,6 +219,7 @@ class NqProcessor(Processor):
         self.predict_yesno = predict_yesno
         self.yn_processor = None
         self.yesno_predictor_path = '/home/sunxy-s18/data/yesno_0321'
+        self.id = 0
         if self.predict_yesno:
             self.prediction_output_path = self.prediction_output_path.strip('.jsonl') + '_yesno.jsonl'
             self.official_prediction_path = self.official_prediction_path + '_yesno'
@@ -216,34 +243,14 @@ class NqProcessor(Processor):
         with _open(data_path) as input_file:
             lines = input_file.readlines()
             for line in tqdm.tqdm(lines):
+                # self.process_one(line)
                 js = json.loads(line.strip('\n'))
                 logging.debug('I was here')
                 if not_simplified:
                     js = simplify_nq_example(js)
                 entry = create_example_from_simplified_jsonl(js)
                 if not entry:
-                    res = {'id': js['example_id'],
-                           'nq_eval':{
-                                "example_id": js['example_id'],
-                                "long_answer": {
-                                    "start_token": -1,
-                                    "end_token": -1,
-                                    "start_byte": -1,
-                                    "end_byte": -1
-                                },
-                                "long_answer_score": -9999,
-                                "short_answers": [{
-                                    "start_token": -1,
-                                    "end_token": -1,
-                                    "start_byte": -1,
-                                    "end_byte": -1
-                                }],
-                                "short_answers_score": -9999,
-                                "yes_no_answer": "NONE"
-                            },
-                           "ans_type_gold": 5,
-                           "ans_type_pred": 0
-                           }
+                    res = no_ans_nq_eval(js['example_id'])
                     results.append(res)
                     continue
                 doc_info = {
@@ -279,6 +286,22 @@ class NqProcessor(Processor):
         logger.info(f'length of results: {len(results)}')
         return results
 
+    def predict_one(self, question, html):
+        if not self.predictor:
+            self.load()
+        entry = {
+            'doc_info':{
+                'id': self.id,
+                'doc_url': 'url'
+            },
+            "question_text": question,
+            "contexts": html,
+        }
+        res = self.predictor.predict_json(entry)
+        self.id += 1
+        return res
+        # return "predict_one_output"
+
     def save_official_prediction(self):
         if not self.results:
             self.predict_and_process()
@@ -289,6 +312,15 @@ class NqProcessor(Processor):
         with open(self.official_prediction_path, 'w') as fout:
             fout.write(json.dumps(official_predictions, ensure_ascii=False))
         logger.info('official prediction saved at:' + self.official_prediction_path)
+
+    def load(self):
+        if not self.predictor:
+            self.predictor = NQPredictor.from_path(self.model_path, predictor_name='nq',
+                                                   cuda_device=CUDA_DEVICE)
+        if self.predict_yesno:
+            if not self.yn_processor:
+                self.yn_processor = QatypeProcessor(self.yesno_predictor_path)
+                self.yn_processor.load()
 
 
 def _open(file_path):
