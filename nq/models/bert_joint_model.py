@@ -9,7 +9,7 @@ from allennlp.common.util import sanitize_wordpiece
 from allennlp.modules.text_field_embedders import BasicTextFieldEmbedder
 from allennlp.modules.token_embedders import PretrainedTransformerEmbedder
 from allennlp.modules import FeedForward
-from allennlp.modules.seq2vec_encoders import CnnEncoder
+from allennlp.modules.seq2vec_encoders import CnnEncoder, BertPooler
 from allennlp.nn.util import get_token_ids_from_text_field_tensors
 from torch import nn
 
@@ -54,7 +54,7 @@ class BertJointNQ(Model):
         self, vocab: Vocabulary, classifier_feedforward: Optional[FeedForward] = None,
             transformer_model_name: str = "bert-base-cased",
             vocab_len_location="/home/sunxy-s18/data/nq/vocab.len",
-            option: str = 'no_type_loss',
+            option: str = 'original',
             # init_all: bool = False
             **kwargs,
     ) -> None:
@@ -75,10 +75,11 @@ class BertJointNQ(Model):
         combine2：理论上应该和combine1一样，只不过用的网络不是output_layer而是 classifier_feedforward
         combine3: 先把cls的768维压缩到12维，然后和3维并到一起。15维一起输入一个[15,3]的linear
         '''
+
         init_all = False
-        options = ['original', 'cnn', 'transformer', 'combine2', 'no_type_loss', 'combine3']
+        options = ['original', 'cnn', 'transformer', 'combine2', 'no_type_loss', 'combine3', 'default_pooler']
         self.option = option
-        if self.option == 'original' or init_all:
+        if self.option == 'original' or self.option == 'default_pooler' or init_all:
             if classifier_feedforward:
                 self.classifier_feedforward = classifier_feedforward
                 logger.warning('We are using fine-tuned model!')
@@ -86,6 +87,8 @@ class BertJointNQ(Model):
             else:
                 self.classifier_feedforward = FeedForward(input_dim=768, num_layers=1, hidden_dims=[5],
                                                  activations=[Activation.by_name("linear")()])
+            if self.option == 'default_pooler':
+                self.pooler = BertPooler(pretrained_model=transformer_model_name, )
         if self.option == 'cnn' or init_all:
             self.cnn = CnnEncoder(embedding_dim=4, num_filters=3, ngram_filter_sizes=(2,))
             self.cnn_output_linear = nn.Linear(3, 3, bias=True)
@@ -97,7 +100,10 @@ class BertJointNQ(Model):
             self.transformer_output_linear = nn.Linear(16, 3, bias=True)
         if self.option == 'combine2' or init_all:
             self.cnn = CnnEncoder(embedding_dim=4, num_filters=3, ngram_filter_sizes=(2,))
-            self.combine2_output_linear = FeedForward(input_dim=771, num_layers=1, hidden_dims=[5],
+            if classifier_feedforward:
+                self.combine2_output_linear = classifier_feedforward
+            else:
+                self.combine2_output_linear = FeedForward(input_dim=771, num_layers=1, hidden_dims=[5],
                                                       activations=Activation.by_name("linear")())
         if self.option == 'combine3' or init_all:
             self.cnn = CnnEncoder(embedding_dim=4, num_filters=3, ngram_filter_sizes=(2,))
@@ -309,6 +315,9 @@ class BertJointNQ(Model):
                     else:
                         type_logits = self.cnn_output_linear(pooled)
 
+            elif self.option == 'default_pooler':
+                pooled = self.pooler(embedded_question)
+                type_logits = self.classifier_feedforward(pooled)
             else: # self.option == 'original':
                 type_logits = self.classifier_feedforward(bert_cls_vec)
 
@@ -439,10 +448,10 @@ class BertJointNQ(Model):
 
                     output_dict["best_span_str"].append(best_span_string)
                     output_dict["best_span_orig"].append((orig_start_token, orig_end_token))
-                    answer_type_pred = answer_type_preds[i]
                     display_bad_case = False
                     # display_bad_case = True
                     if display_bad_case:
+                        answer_type_pred = answer_type_preds[i]
                         answer_type_idx = metadata_entry['answer_type_idx']
                         # if answer_type_pred != answer_type_idx or answer_type_pred != 0 and best_span_string != answer_text:
                         if best_span_string != answer_text and answer_type_idx != 0:
