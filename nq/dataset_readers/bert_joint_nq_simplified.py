@@ -220,9 +220,9 @@ def get_candidate_type(e, idx):
         return "Table"
     elif first_token == "<P>":
         return "Paragraph"
-    elif first_token in ("<Ul>", "<Dl>", "<Ol>"):
+    elif first_token in ("<Ul>", "<Dl>", "<Ol>"):  # unordered ordered description list
         return "List"
-    elif first_token in ("<Tr>", "<Li>", "<Dd>", "<Dt>"):
+    elif first_token in ("<Tr>", "<Li>", "<Dd>", "<Dt>"):  # table row, list item, description list
         return "Other"
     else:
         logger.warning("Unknown candidate type found: %s", first_token)
@@ -356,6 +356,7 @@ def create_example_from_simplified_jsonl(e):
             context_tokens.extend(context["tokens"])
             single_map.extend(context["text_map"])
             offset += len(context["tokens"])
+    assert len(single_map) == len(context_tokens)
 
 
     if no_ans:
@@ -385,11 +386,12 @@ def create_example_from_simplified_jsonl(e):
 
 # A special token in NQ is made of non-space chars enclosed in square brackets.
 _SPECIAL_TOKENS_RE = re.compile(r"^\[[^ ]*\]$", re.UNICODE)
-# TODO change here, can be moved into config or add number
-# NQ_SPECIAL_TOKEN = {'bos_token': ['[Table]', '[Paragraph]', '[List]', '[Other]']}
-TextSpan = collections.namedtuple("TextSpan", "token_positions text")
-
+tags_to_keep = ["<Table>", "<P>", "<Ul>", "<Dl>", "<Ol>", "<Tr>", "<Li>", "<Dd>", "<Dt>"]
 _HTML_TOKENS_RE = re.compile(r"^<[^ ]*>$", re.UNICODE)
+TextSpan = collections.namedtuple("TextSpan", "token_positions text")
+# TODO change here, can be moved into config or add number
+NQ_SPECIAL_TOKEN = ['[Table]', '[Paragraph]', '[List]', '[Other]']
+
 
 # if __name__ == '__main__':
 #     # with open('~/data/nq/v1.0-simplified_nq-dev-all.jsonl', 'r') as f:
@@ -787,10 +789,10 @@ class BertJointNQReaderSimple(DatasetReader):
                 selected.extend(pos_span)
             else:
                 selected.append(pos_span[0])
-        # pos_yielded = len(selected)
+        pos_yielded = len(selected)
         if not neg_span:
             selected = [(x[1], x[2]) for x in selected]
-            return selected
+            return selected, pos_yielded, 0
         # todo note here neg_pos_ratio is no longer a ratio, it is just the max neg instance per example
         num_neg_to_keep = self.neg_pos_ratio
         neg_span = [x for x in neg_span if x[1]<x[2]]
@@ -813,11 +815,11 @@ class BertJointNQReaderSimple(DatasetReader):
                 if len(pos_span) == 0 and random.random() < 0.04:
                     selected.append(span)
                     # logger.info('not answerable')
-        # neg_yielded = len(selected) - pos_yielded
+        neg_yielded = len(selected) - pos_yielded
         selected = [(x[1], x[2]) for x in selected]
-        return selected
+        return selected, pos_yielded, neg_yielded
 
-    def text_entry_js_to_instances(self, js) -> List[Instance]:
+    def text_entry_js_to_instances(self, js):
         instances = []
         tokenized_context = \
             [Token(t[0], idx=t[1], text_id=t[2], type_id=self.context_type_id,
@@ -831,8 +833,8 @@ class BertJointNQReaderSimple(DatasetReader):
         context = js['context']
         answers = js['answers']
         token_answer_span = js['token_answer_span']
-        selected_spans = self.select_span_by_strategy(js['pos_span'], js['neg_span'],
-                                                      strategy=self.downsample_strategy)
+        selected_spans, p_y, n_y = self.select_span_by_strategy(js['pos_span'], js['neg_span'],
+                                                                strategy=self.downsample_strategy)
         if self.allow_ans_type:
             if self.allow_ans_type == '01':
                 if answers[0]['answer_type'] in ['long', 'yes', 'no']:
@@ -865,7 +867,7 @@ class BertJointNQReaderSimple(DatasetReader):
                 train=True,
             )
             instances.append(instance)
-        return instances
+        return instances, p_y, n_y
 
     def read_text_entry(self, input_paths: str):
         input_files = glob.glob(input_paths + '*')
@@ -883,6 +885,8 @@ class BertJointNQReaderSimple(DatasetReader):
         logger.info(f'Negative instances are selected with the strategy: {self.downsample_strategy}')
         logger.info(f'AnswerType restriction: {self.allow_ans_type}')
         cnt = 0
+        p = 0
+        n = 0
         for path in input_files:
             logger.info("Reading: %s", path)
             with open(path, 'r') as f:
@@ -890,11 +894,24 @@ class BertJointNQReaderSimple(DatasetReader):
                     js = json.loads(line)
                     if not js:
                         continue
-                    instances = self.text_entry_js_to_instances(js)
+                    instances, p_y, n_y = self.text_entry_js_to_instances(js)
+                    p += p_y
+                    n += n_y
                     for instance in instances:
-                        yield instance
                         cnt += 1
+                        if self.max_instances and cnt == self.max_instances:
+                            logger.info(f'Instance yielded: {cnt}')
+                            logger.info(f'Pos instance: {p}, neg instance: {n}, cnt: {cnt}, p_y n_y: {p_y} {n_y}')
+                        yield instance
+                        if self.max_instances and cnt == self.max_instances:
+                            break
+                    if self.max_instances and cnt == self.max_instances:
+                        break
+            if self.max_instances and cnt == self.max_instances:
+                break
+
         logger.info(f'Instance yielded: {cnt}')
+        logger.info(f'Pos instance: {p}, neg instance: {n}')
 
     def generate_text_instances_from_simplified_js_line(self, line):
         js = json.loads(line, object_pairs_hook=collections.OrderedDict)
@@ -1020,7 +1037,7 @@ class BertJointNQReaderSimple(DatasetReader):
                 id = self.tokenizer.convert_tokens_to_ids(token_text)
                 if id == 100:
                     print(token_text)
-                    assert False
+                    # assert False
                 special_token = Token(token_text, idx=i,
                                       text_id=id,
                                       type_id=self.non_content_type_id)
