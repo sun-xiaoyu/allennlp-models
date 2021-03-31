@@ -524,23 +524,31 @@ class BertJointNQReaderSimple(DatasetReader):
         self.output_type = output_type
         self.keep_all_pos = keep_all_pos
         self.allow_ans_type = allow_ans_type
-        self.question_type_id = 1
-        self.context_type_id = 1
-
-        self.standard_type_id = standard_type_id
-        self.allennlp_type_id = allennlp_type_id
-        if self.standard_type_id and self.allennlp_type_id:
-            raise Exception('Can only choose one way of encoding type_id!')
-        if self.standard_type_id:
+        if self.non_content_type_id < 1:
             self.question_type_id = 0
-            self.context_type_id = 1
-            self.non_content_type_id = 0
-        elif self.allennlp_type_id:
-            self.question_type_id = 1
             self.context_type_id = 0
-            self.non_content_type_id = 1
+            logger.info(f"Max type-id for model: {self.non_content_type_id}")
+            self.standard_type_id = False
+            self.allennlp_type_id = False
+        else:
+            self.question_type_id = 1
+            self.context_type_id = 1
+
+            self.standard_type_id = standard_type_id
+            self.allennlp_type_id = allennlp_type_id
+            if self.standard_type_id and self.allennlp_type_id:
+                raise Exception('Can only choose one way of encoding type_id!')
+            if self.standard_type_id:
+                self.question_type_id = 0
+                self.context_type_id = 1
+                self.non_content_type_id = 0
+            elif self.allennlp_type_id:
+                self.question_type_id = 1
+                self.context_type_id = 0
+                self.non_content_type_id = 1
         logger.info(f'We use standard type_id as in the BERT paper: {self.standard_type_id}')
         logger.info(f'We use type_id the allennp way: {self.allennlp_type_id}')
+
 
         # workaround for a bug in the transformers library
         if "distilbert" in transformer_model_name:

@@ -66,7 +66,7 @@ class BertJointNQ(Model):
         logger.info('wtf' * 20)
         logger.info('wtf' * 20)
         self._linear_layer = nn.Linear(self._text_field_embedder.get_output_dim(), 2)
-
+        output_dim = self._text_field_embedder.get_output_dim()
         '''
         cnn: 用cnn对指针网络、是否答案做特征抽取
         transformer: 
@@ -85,7 +85,7 @@ class BertJointNQ(Model):
                 logger.warning('We are using fine-tuned model!')
                 logger.info(classifier_feedforward)
             else:
-                self.classifier_feedforward = FeedForward(input_dim=768, num_layers=1, hidden_dims=[5],
+                self.classifier_feedforward = FeedForward(input_dim=output_dim, num_layers=1, hidden_dims=[5],
                                                  activations=[Activation.by_name("linear")()])
             if self.option == 'default_pooler':
                 self.pooler = BertPooler(pretrained_model=transformer_model_name, )
@@ -103,11 +103,11 @@ class BertJointNQ(Model):
             if classifier_feedforward:
                 self.combine2_output_linear = classifier_feedforward
             else:
-                self.combine2_output_linear = FeedForward(input_dim=771, num_layers=1, hidden_dims=[5],
+                self.combine2_output_linear = FeedForward(input_dim=output_dim+3, num_layers=1, hidden_dims=[5],
                                                       activations=Activation.by_name("linear")())
         if self.option == 'combine3' or init_all:
             self.cnn = CnnEncoder(embedding_dim=4, num_filters=3, ngram_filter_sizes=(2,))
-            self.combine3_cls_pooler = FeedForward(input_dim=768, num_layers=1, hidden_dims=[12],
+            self.combine3_cls_pooler = FeedForward(input_dim=output_dim, num_layers=1, hidden_dims=[12],
                                                    activations=Activation.by_name("relu")(), dropout=0.1)
             self.combine3_output_linear = FeedForward(input_dim=15, num_layers=1, hidden_dims=[5],
                                                       activations=Activation.by_name("linear")())
@@ -306,7 +306,7 @@ class BertJointNQ(Model):
                     type_vec_for_cnn = torch.cat((logits, sptk, cls_marker), dim=2)
                     pooled = self.cnn(type_vec_for_cnn, possible_answer_mask)
                     if self.option == 'combine2':
-                        bert_cls_vec = torch.cat([pooled, bert_cls_vec], dim=1)
+                        bert_cls_vec = torch.cat([bert_cls_vec, pooled], dim=1)
                         type_logits = self.combine2_output_linear(bert_cls_vec)
                     elif self.option == 'combine3':
                         cls_pooled = self.combine3_cls_pooler(bert_cls_vec)
