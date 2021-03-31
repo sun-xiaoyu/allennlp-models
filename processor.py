@@ -4,6 +4,7 @@ import os
 import sys
 import gzip
 import tqdm
+from multiprocessing import Pool
 import numpy as np
 from nq import NQPredictor, QatypePredictor
 from nq.nq_text_utils import simplify_nq_example
@@ -153,7 +154,7 @@ def compute_predictions(candidates, token_map, result, yesno:str = "NONE"):
             end = short_span[1]
             if c["top_level"] and c["start_token"] <= start and c["end_token"] >= end:
                 long_span = c["start_token"], c["end_token"]
-                if long_span[0] == short_span[0] - 1 and long_span[1] == short_span[0] + 1:
+                if long_span[0] == short_span[0] - 1 and long_span[1] == short_span[1] + 1:
                     short_span = -1, -1
                     print("it's working")
                 assert long_span[0] < long_span[1], (long_span[0], long_span[1])
@@ -221,7 +222,7 @@ class NqProcessor(Processor):
         self.yesno_predictor_path = '/home/sunxy-s18/data/yesno_0321'
         self.id = 0
         if self.predict_yesno:
-            self.prediction_output_path = self.prediction_output_path.strip('.jsonl') + '_yesno.jsonl'
+            self.prediction_output_path = self.prediction_output_path[:-6] + '_yesno.jsonl'
             self.official_prediction_path = self.official_prediction_path + '_yesno'
             logger.info(f"Actually, prediction output path will be: {self.prediction_output_path}")
 
@@ -237,51 +238,18 @@ class NqProcessor(Processor):
                     self.yn_processor.load()
         results = []
         logger.info("Reading: %s", data_path)
-        not_simplified = 'simplified' not in data_path
-        cnt = 0
+
+        # cnt = 0
         logger.info(f"prediction output path will be: {self.prediction_output_path}")
         with _open(data_path) as input_file:
             lines = input_file.readlines()
+            # with Pool(2) as p:
+            #     results = list(tqdm.tqdm(p.imap(self.process_one, lines), total=7830))
             for line in tqdm.tqdm(lines):
-                # self.process_one(line)
-                js = json.loads(line.strip('\n'))
-                logging.debug('I was here')
-                if not_simplified:
-                    js = simplify_nq_example(js)
-                entry = create_example_from_simplified_jsonl(js)
-                if not entry:
-                    res = no_ans_nq_eval(js['example_id'])
-                    results.append(res)
-                    continue
-                doc_info = {
-                    'id': entry['example_id'],
-                    'doc_url': entry['document_url'],
-                }
-                entry['doc_info'] = doc_info
-                if not debug:
-                    res = {'id': entry['example_id'],
-                           'doc_url': entry['document_url'],
-                           'question_text': entry['question_text'],
-                           'answers': entry['answers'],
-                           'ans_type_gold': make_nq_answer(entry['answers'][0]['answer_type'])}
-                    res.update(self.predictor.predict_json(entry))
-                    res['ans_type_pred'] = int(res['best_span_str'] != '')
-                else:
-                    res = self.results[cnt]
-                    cnt += 1
-                    assert res['id'] == entry['example_id']
-                yesno = 'NONE'
-                if debug:
-                    yesno = res['nq_eval']['yes_no_answer']
-                elif self.predict_yesno:
-                    yesno = self.yn_processor.predict_yn(res['question_text'], res['best_span_str'])
-                res['nq_eval'] = compute_predictions(js["long_answer_candidates"],
-                                                     entry["token_map"], res, yesno=yesno)
-
-                if not debug:
-                    results.append(res)
+                results.append(self.process_one(line))
                 if unique_id and len(results) > unique_id:
                     break
+
 
         logger.info(f'length of results: {len(results)}')
         return results
@@ -321,6 +289,37 @@ class NqProcessor(Processor):
             if not self.yn_processor:
                 self.yn_processor = QatypeProcessor(self.yesno_predictor_path)
                 self.yn_processor.load()
+
+    def process_one(self, line):
+        js = json.loads(line.strip('\n'))
+        logging.debug('I was here')
+        # todo we use simplified data
+        # if not_simplified:
+        #     js = simplify_nq_example(js)
+        entry = create_example_from_simplified_jsonl(js)
+        if not entry:
+            res = no_ans_nq_eval(js['example_id'])
+            return res
+        doc_info = {
+            'id': entry['example_id'],
+            'doc_url': entry['document_url'],
+        }
+        entry['doc_info'] = doc_info
+        res = {'id': entry['example_id'],
+               'doc_url': entry['document_url'],
+               'question_text': entry['question_text'],
+               'answers': entry['answers'],
+               'ans_type_gold': make_nq_answer(entry['answers'][0]['answer_type'])}
+        res.update(self.predictor.predict_json(entry))
+        res['ans_type_pred'] = int(res['best_span_str'] != '')
+        yesno = 'NONE'
+        if self.predict_yesno:
+            yesno = self.yn_processor.predict_yn(res['question_text'], res['best_span_str'])
+        res['nq_eval'] = compute_predictions(js["long_answer_candidates"],
+                                             entry["token_map"], res, yesno=yesno)
+
+        return res
+
 
 
 def _open(file_path):
