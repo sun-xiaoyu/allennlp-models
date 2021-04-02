@@ -892,6 +892,7 @@ class BertJointNQReaderSimple(DatasetReader):
         logger.info('Reading text entries!')
         logger.info(f'Negative instances are selected with the strategy: {self.downsample_strategy}')
         logger.info(f'AnswerType restriction: {self.allow_ans_type}')
+        logger.info('Current vocab length: %d', len(self.tokenizer))
         cnt = 0
         p = 0
         n = 0

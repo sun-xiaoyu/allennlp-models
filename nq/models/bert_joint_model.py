@@ -62,11 +62,19 @@ class BertJointNQ(Model):
         self._text_field_embedder = BasicTextFieldEmbedder(
             {"tokens": PretrainedTransformerEmbedder(transformer_model_name)}
         )
-        logger.info('wtf'*20)
+
         logger.info('wtf' * 20)
-        logger.info('wtf' * 20)
-        self._linear_layer = nn.Linear(self._text_field_embedder.get_output_dim(), 2)
+        # if str(vocab_len_location).isdigit():
+        #     vocab_len = int(vocab_len_location)
+        # else:
+        #     with open(vocab_len_location, 'r') as f:
+        #         vocab_len = int(f.read())
+        # self._text_field_embedder._token_embedders['tokens'].transformer_model.resize_token_embeddings(vocab_len)
+        # logger.info(f'Model embedding matrix resized to length: {vocab_len}')
+        logger.info('yeah' * 20)
+
         output_dim = self._text_field_embedder.get_output_dim()
+        self._linear_layer = nn.Linear(output_dim, 2)
         '''
         cnn: 用cnn对指针网络、是否答案做特征抽取
         transformer: 
@@ -125,16 +133,7 @@ class BertJointNQ(Model):
         self._span_accuracy = BooleanAccuracy()
         self._ans_type_accuracy = CategoricalAccuracy()
         self._per_instance_metrics = SquadEmAndF1()
-        if str(vocab_len_location).isdigit():
-            vocab_len = int(vocab_len_location)
-        else:
-            with open(vocab_len_location, 'r') as f:
-                vocab_len = int(f.read())
-        self._text_field_embedder._token_embedders['tokens'].transformer_model.resize_token_embeddings(vocab_len)
-        logger.info(f'Model embedding matrix resized to length: {vocab_len}')
-        logger.info('yeah' * 20)
-        logger.info('yeah' * 20)
-        logger.info('yeah' * 20)
+
         self.no_type_loss = self.option == 'no_type_loss'
         logger.info(f'No type_loss**: {self.no_type_loss}')
         logger.info(f'We use model architecture as: {self.option}')
