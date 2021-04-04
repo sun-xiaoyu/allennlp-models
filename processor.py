@@ -21,7 +21,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 DEBUGGGGGGGGGG = False
-CUDA_DEVICE = 2
+CUDA_DEVICE = 0
 YN_TYPE_DICT = {2: 'NONE', 3: 'YES', 4: 'NO'}
 
 
@@ -148,17 +148,17 @@ def compute_predictions(candidates, token_map, result, yesno:str = "NONE"):
             logger.warning(f"Can't map token back to original uncleaned text! {result['id']}, {short_span_orig} ")
         else:
             short_span = (token_map[s], token_map[e] + 1)
-        assert short_span[0] < short_span[1], (short_span[0], short_span[1])
-        for c in candidates:
-            start = short_span[0]
-            end = short_span[1]
-            if c["top_level"] and c["start_token"] <= start and c["end_token"] >= end:
-                long_span = c["start_token"], c["end_token"]
-                if long_span[0] == short_span[0] - 1 and long_span[1] == short_span[1] + 1:
-                    short_span = -1, -1
-                    print("it's working")
-                assert long_span[0] < long_span[1], (long_span[0], long_span[1])
-                break
+            assert short_span[0] < short_span[1], (short_span[0], short_span[1])
+            for c in candidates:
+                start = short_span[0]
+                end = short_span[1]
+                if c["top_level"] and c["start_token"] <= start and c["end_token"] >= end:
+                    long_span = c["start_token"], c["end_token"]
+                    if long_span[0] == short_span[0] - 1 and long_span[1] == short_span[1] + 1:
+                        short_span = -1, -1
+                        # print("it's working")
+                    assert long_span[0] < long_span[1], (long_span[0], long_span[1])
+                    break
     if yesno != 'NONE':
         short_span = -1, -1
     nq_eval = {
@@ -213,6 +213,7 @@ class NqProcessor(Processor):
         self.predictor = None
         # self.dev_data_path = '/home/sunxy-s18/data/nq/v1.0-nq-dev-all.jsonl'
         self.dev_data_path = '/home/sunxy-s18/data/nq/simplified_nq_dev_all_7830.jsonl'
+        self.dev_textentry_path = '/home/sunxy-s18/data/nq/train/textentry_new_dev_all.jsonl'
         # we use the new predictor! Always try to predict a plausible answer!
         # Don't predict noanswer unless noanswer in every window
         self.official_prediction_path = f'/home/sunxy-s18/data/nq/official_predictions_new_{self.model_name}'
@@ -242,13 +243,16 @@ class NqProcessor(Processor):
         # cnt = 0
         logger.info(f"prediction output path will be: {self.prediction_output_path}")
         with _open(data_path) as input_file:
-            lines = input_file.readlines()
-            # with Pool(2) as p:
-            #     results = list(tqdm.tqdm(p.imap(self.process_one, lines), total=7830))
-            for line in tqdm.tqdm(lines):
-                results.append(self.process_one(line))
-                if unique_id and len(results) > unique_id:
-                    break
+            with open(self.dev_textentry_path) as f:
+                textentries = f.readlines()
+                lines = input_file.readlines()
+                # with Pool(2) as p:
+                #     results = list(tqdm.tqdm(p.imap(self.process_one, lines), total=7830))
+                for i, line in enumerate(tqdm.tqdm(lines)):
+                    results.append(self.process_one(line, textentries[i]))
+                    # print(results[-1]['id'], results[-1]['nq_eval'])
+                    if unique_id and len(results) > unique_id:
+                        break
 
 
         logger.info(f'length of results: {len(results)}')
@@ -258,7 +262,7 @@ class NqProcessor(Processor):
         if not self.predictor:
             self.load()
         entry = {
-            'doc_info':{
+            'doc_info': {
                 'id': self.id,
                 'doc_url': 'url'
             },
@@ -290,8 +294,9 @@ class NqProcessor(Processor):
                 self.yn_processor = QatypeProcessor(self.yesno_predictor_path)
                 self.yn_processor.load()
 
-    def process_one(self, line):
+    def process_one(self, line, textentry):
         js = json.loads(line.strip('\n'))
+        textentry = json.loads(textentry.strip('\n'))
         logging.debug('I was here')
         # todo we use simplified data
         # if not_simplified:
@@ -310,7 +315,8 @@ class NqProcessor(Processor):
                'question_text': entry['question_text'],
                'answers': entry['answers'],
                'ans_type_gold': make_nq_answer(entry['answers'][0]['answer_type'])}
-        res.update(self.predictor.predict_json(entry))
+        # res.update(self.predictor.predict_json(entry))
+        res.update(self.predictor.predict_one_text_entry(textentry))
         res['ans_type_pred'] = int(res['best_span_str'] != '')
         yesno = 'NONE'
         if self.predict_yesno:

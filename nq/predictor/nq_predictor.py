@@ -46,6 +46,12 @@ class NQPredictor(Predictor):
         assert len(results) == 1
         return results[0]
 
+    def predict_one_text_entry(self, inputs: JsonDict) -> JsonDict:
+        instances, _, _ = self._dataset_reader.text_entry_js_to_instances(inputs, train=False, strategy='all')
+        result = self.predict_batch_instance(instances)
+        assert len(result) == 1
+        return result[0]
+
     @overrides
     def _json_to_instance(self, json_dict: JsonDict) -> Instance:
         raise NotImplementedError(

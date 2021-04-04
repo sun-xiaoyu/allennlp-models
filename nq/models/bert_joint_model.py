@@ -475,6 +475,7 @@ class BertJointNQ(Model):
                                 print('')
                                 print('')
                 else:
+                    # character level
                     context_tokens_for_question = metadata_entry["context_tokens"]
                     if best_span[0] == 0:
                         # Predicting [CLS] is interpreted as predicting the question as unanswerable.

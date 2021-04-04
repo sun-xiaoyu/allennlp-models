@@ -791,6 +791,8 @@ class BertJointNQReaderSimple(DatasetReader):
         logger.info(f'Instance yielded: {cnt}')
 
     def select_span_by_strategy(self, pos_span, neg_span, strategy='best'):
+        if strategy == 'all':
+            return [(x[1], x[2]) for x in pos_span + neg_span], 0, 0
         selected = []
         if pos_span:
             if self.keep_all_pos:
@@ -827,7 +829,7 @@ class BertJointNQReaderSimple(DatasetReader):
         selected = [(x[1], x[2]) for x in selected]
         return selected, pos_yielded, neg_yielded
 
-    def text_entry_js_to_instances(self, js):
+    def text_entry_js_to_instances(self, js, train=True, strategy=None):
         instances = []
         tokenized_context = \
             [Token(t[0], idx=t[1], text_id=t[2], type_id=self.context_type_id,
@@ -842,7 +844,7 @@ class BertJointNQReaderSimple(DatasetReader):
         answers = js['answers']
         token_answer_span = js['token_answer_span']
         selected_spans, p_y, n_y = self.select_span_by_strategy(js['pos_span'], js['neg_span'],
-                                                                strategy=self.downsample_strategy)
+                                                                strategy=strategy or self.downsample_strategy)
         if self.allow_ans_type:
             if self.allow_ans_type == '01':
                 if answers[0]['answer_type'] in ['long', 'yes', 'no']:
@@ -872,7 +874,7 @@ class BertJointNQReaderSimple(DatasetReader):
                 answers,
                 window_token_answer_span,
                 additional_metadata,
-                train=True,
+                train=train,
             )
             instances.append(instance)
         return instances, p_y, n_y
@@ -1154,7 +1156,7 @@ class BertJointNQReaderSimple(DatasetReader):
             # stride in the paper and all other places
             length = len(tokenized_context) - stride_start
             length = min(length, space_for_context)
-            if stride_start + length >=len(tokenized_context):
+            if stride_start + length >= len(tokenized_context):
                 break
             stride_start += min(length, self.stride)
 
