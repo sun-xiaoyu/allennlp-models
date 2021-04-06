@@ -426,11 +426,8 @@ def passage_sim_score(window_spans, tokenized_doc, doc, question):
     return pos_span, neg_span
 
 
-
-
-
-@DatasetReader.register("bert_joint_nq_simplified")
-class BertJointNQReaderSimple(DatasetReader):
+@DatasetReader.register("bert_joint_nq_multi")
+class BertJointNQReaderMulti(DatasetReader):
     """
     Reads a JSON-formatted SQuAD file and returns a ``Dataset`` where the ``Instances`` have four
     fields:
@@ -495,7 +492,7 @@ class BertJointNQReaderSimple(DatasetReader):
             lazy=False,
             allow_ans_type=None,
             standard_type_id=False,
-            allennlp_type_id=True,
+            allennlp_type_id=False,
             **kwargs
     ) -> None:
         super().__init__(lazy=lazy, **kwargs)
@@ -1270,14 +1267,30 @@ class BertJointNQReaderSimple(DatasetReader):
             # TODO 可以加一个答案内容匹配的assert
             ans_span = (windows_token_answer_span[0] + start_of_context,
                         windows_token_answer_span[1] + start_of_context)
+            # asset checks
+            ans_type = answers[0]['answer_type']
+            answer_text = answers[0]['span_text']
             fields["answer_span"] = SpanField(
                 ans_span[0],
                 ans_span[1],
                 question_with_context_field,
             )
-            # asset checks
-            ans_type = answers[0]['answer_type']
-            answer_text = answers[0]['span_text']
+            if ans_type == 'short':
+                fields["sa_answer_span"] = SpanField(
+                    ans_span[0],
+                    ans_span[1],
+                    question_with_context_field,
+                )
+                fields["la_answer_span"] = SpanField(0, 0, question_with_context_field)
+            elif ans_type == 'long':
+                fields["la_answer_span"] = SpanField(
+                    ans_span[0],
+                    ans_span[1],
+                    question_with_context_field,
+                )
+                fields["sa_answer_span"] = SpanField(0, 0, question_with_context_field)
+            else:
+                raise False
             ans_span_context = (ans_span[0] - start_of_context, ans_span[1] - start_of_context)
             t1 = window_context_wordpiece_tokens[ans_span_context[0]]
             t2 = window_context_wordpiece_tokens[ans_span_context[1]]
@@ -1287,6 +1300,8 @@ class BertJointNQReaderSimple(DatasetReader):
             # We have to put in something even when we don't have an answer, so that this instance can be batched
             # together with other instances that have answers.
             # TODO change to cls token here？ yes!
+            fields["la_answer_span"] = SpanField(0, 0, question_with_context_field)
+            fields["sa_answer_span"] = SpanField(0, 0, question_with_context_field)
             fields["answer_span"] = SpanField(0, 0, question_with_context_field)
             ans_type = 'unknown'
             answer_text = ""
