@@ -291,6 +291,7 @@ class BertJointNQMulti(Model):
 
         type_probs = torch.nn.functional.softmax(type_logits, dim=-1)
         argmax_indices = torch.argmax(type_probs, dim=-1)
+        ls_choice = torch.argmax(type_probs[:,1:3], dim=-1).unsqueeze(1)
         output_dict['answer_type_logits'] = type_logits
         output_dict["answer_type_probs"] = type_probs
         output_dict["ans_type_pred_cls"] = argmax_indices
@@ -298,13 +299,13 @@ class BertJointNQMulti(Model):
         span_s = torch.cat([best_sa_spans[:, 0].unsqueeze(1), best_la_spans[:, 0].unsqueeze(1)], dim=-1)
         span_e = torch.cat([best_sa_spans[:, 1].unsqueeze(1), best_la_spans[:, 1].unsqueeze(1)], dim=-1)
         # spans = torch.cat([best_sa_spans.unsqueeze(1), best_la_spans.unsqueeze(1)], dim=1)
-        argmax_indices = argmax_indices.unsqueeze(1).clamp(min=1, max=2) - 1
-        best_start = torch.gather(span_s, 1, argmax_indices)
-        best_end = torch.gather(span_e, 1, argmax_indices)
+        # argmax_indices = argmax_indices.unsqueeze(1).clamp(min=1, max=2) - 1
+        best_start = torch.gather(span_s, 1, ls_choice)
+        best_end = torch.gather(span_e, 1, ls_choice)
         best_spans = torch.cat([best_start, best_end], dim=-1)
 
         scores = torch.cat([best_sa_scores, best_la_scores], dim=1)
-        best_span_scores = torch.gather(scores, 1, argmax_indices)
+        best_span_scores = torch.gather(scores, 1, ls_choice).squeeze(1)
 
         output_dict["best_spans"] = best_spans
         output_dict["best_span_scores"] = best_span_scores
@@ -331,8 +332,12 @@ class BertJointNQMulti(Model):
             self._span_accuracy(
                 best_spans, answer_span,  # span_mask.unsqueeze(-1).expand_as(best_sa_spans)
             )
-            sa_loss = cross_entropy(sa_start_logits, sa_start, ) + cross_entropy(sa_end_logits, sa_end, )
-            la_loss = cross_entropy(la_start_logits, la_start, ) + cross_entropy(la_end_logits, la_end, )
+            sa_loss = cross_entropy(sa_start_logits, sa_start, reduce=False) + \
+                      cross_entropy(sa_end_logits, sa_end, reduce=False)
+            la_loss = cross_entropy(la_start_logits, la_start, reduce=False) + \
+                      cross_entropy(la_end_logits, la_end, reduce=False)
+            l_and_s_loss = torch.cat([sa_loss.unsqueeze(1), la_loss.unsqueeze(1)], dim=-1)
+            l_or_s_loss = torch.mean(torch.gather(l_and_s_loss, 1, ls_choice).squeeze(1))
             if torch.any(sa_loss > 1e9) or torch.any(la_loss > 1e9):
                 logger.critical("loss too high (%r) (%r)", sa_loss, la_loss)
                 logger.critical("sa_logits: %r", sa_start_logits)
@@ -342,12 +347,9 @@ class BertJointNQMulti(Model):
                 logger.critical(f"sa span: {sa_start, sa_end}, la span: {la_start, la_end}")
                 assert False
 
-            #
-            # if self.no_type_loss:
-            #     loss = sa_loss + la_loss
-            # else:
             type_loss = cross_entropy(type_logits, answer_type)
-            loss = sa_loss + la_loss + type_loss
+            # loss = sa_loss + la_loss + type_loss
+            loss = l_or_s_loss + type_loss
             self._ans_type_accuracy(type_logits, answer_type)
 
             self._sa_start_accuracy(sa_start_logits, sa_start)
