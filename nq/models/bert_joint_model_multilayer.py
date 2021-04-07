@@ -245,24 +245,24 @@ class BertJointNQMulti(Model):
         best_la_spans = get_best_span(la_start_logits, la_end_logits)
 
         # Sum the span start score with the span end score to get an overall score for the span.
-        # shape: (batch_size,)
+        # shape: (batch_size, 1)
         best_la_scores = torch.gather(
             la_start_logits, 1, best_la_spans[:, 0].unsqueeze(1)
         ) + torch.gather(la_end_logits, 1, best_la_spans[:, 1].unsqueeze(1)) - \
                          la_start_logits[:, 0].unsqueeze(1) - la_end_logits[:, 0].unsqueeze(1)
-        best_la_scores = best_la_scores.squeeze(1)
+        # best_la_scores = best_la_scores.squeeze(1)
 
         
         # shape: (batch_size, 2)
         best_sa_spans = get_best_span(sa_start_logits, sa_end_logits)
 
         # Sum the span start score with the span end score to get an overall score for the span.
-        # shape: (batch_size,)
+        # shape: (batch_size, 1)
         best_sa_scores = torch.gather(
             sa_start_logits, 1, best_sa_spans[:, 0].unsqueeze(1)
         ) + torch.gather(sa_end_logits, 1, best_sa_spans[:, 1].unsqueeze(1)) - \
                            sa_start_logits[:,0].unsqueeze(1)- sa_end_logits[:,0].unsqueeze(1)
-        best_sa_scores = best_sa_scores.squeeze(1)
+        # best_sa_scores = best_sa_scores.squeeze(1)
 
         bert_cls_vec = embedded_question[:, 0, :]
         type_logits = self.classifier_feedforward(bert_cls_vec)
@@ -302,6 +302,12 @@ class BertJointNQMulti(Model):
         best_start = torch.gather(span_s, 1, argmax_indices)
         best_end = torch.gather(span_e, 1, argmax_indices)
         best_spans = torch.cat([best_start, best_end], dim=-1)
+
+        scores = torch.cat([best_sa_scores, best_la_scores], dim=1)
+        best_span_scores = torch.gather(scores, 1, argmax_indices)
+
+        output_dict["best_spans"] = best_spans
+        output_dict["best_span_scores"] = best_span_scores
 
 
         # todo it was here
@@ -396,8 +402,8 @@ class BertJointNQMulti(Model):
                             # best_span_string = metadata_entry["context"][orig_start_token:orig_end_token]
 
                     answer_text = metadata_entry.get("answer_text")
-                    if len(answer_text) > 0:
-                        self._per_instance_metrics(best_span_string, [answer_text])
+                    # if len(answer_text) > 0:
+                    #     self._per_instance_metrics(best_span_string, [answer_text])
                     # TODO 问题出在上面这一行。和原来的 model 文件相比，best_span_string的计算方法变了，所以实际传进去的东西不一样。
 
                     output_dict["best_span_str"].append(best_span_string)

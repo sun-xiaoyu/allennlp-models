@@ -496,6 +496,7 @@ class BertJointNQReaderSimple(DatasetReader):
             allow_ans_type=None,
             standard_type_id=False,
             allennlp_type_id=True,
+            max_entry=None,
             **kwargs
     ) -> None:
         super().__init__(lazy=lazy, **kwargs)
@@ -513,6 +514,7 @@ class BertJointNQReaderSimple(DatasetReader):
         self.enable_downsample_strategy = enable_downsample_strategy
         self.downsample_strategy = downsample_strategy
         self.max_query_length = max_query_length
+        self.max_entry = max_entry
         self.non_content_type_id = max(
             self._tokenizer.tokenizer.encode_plus("left", "right", return_token_type_ids=True)[
                 "token_type_ids"
@@ -898,6 +900,7 @@ class BertJointNQReaderSimple(DatasetReader):
         cnt = 0
         p = 0
         n = 0
+        entry_read = 0
         for path in input_files:
             logger.info("Reading: %s", path)
             with open(path, 'r') as f:
@@ -913,14 +916,20 @@ class BertJointNQReaderSimple(DatasetReader):
                         if self.max_instances and cnt == self.max_instances:
                             logger.info(f'Instance yielded: {cnt}')
                             logger.info(f'Pos instance: {p}, neg instance: {n}, cnt: {cnt}, p_y n_y: {p_y} {n_y}')
+                            logger.info(f'entry read: {entry_read}')
                         yield instance
                         if self.max_instances and cnt == self.max_instances:
                             break
+                    entry_read += 1
                     if self.max_instances and cnt == self.max_instances:
+                        break
+                    if self.max_entry and entry_read > self.max_entry:
                         break
             if self.max_instances and cnt == self.max_instances:
                 break
-
+            if self.max_entry and entry_read > self.max_entry:
+                break
+        logger.info(f'entry read: {entry_read}')
         logger.info(f'Instance yielded: {cnt}')
         logger.info(f'Pos instance: {p}, neg instance: {n}')
 
