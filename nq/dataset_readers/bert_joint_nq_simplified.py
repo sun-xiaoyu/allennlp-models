@@ -426,9 +426,6 @@ def passage_sim_score(window_spans, tokenized_doc, doc, question):
     return pos_span, neg_span
 
 
-
-
-
 @DatasetReader.register("bert_joint_nq_simplified")
 class BertJointNQReaderSimple(DatasetReader):
     """
@@ -464,12 +461,6 @@ class BertJointNQReaderSimple(DatasetReader):
     neg_pos_ratio : ``int``, optional (default=1)
         This is the sup (upper bound) of the neg/pos ratio of instances to be yielded from one entry. Default if one
         neg_instance vs 1 pos_instance, if it is set at 2, for 1 entry, the neg_instance per entry is no greater than 2.
-    enable_downsample_strategy : ``bool``, optional (default=False)
-        If we will employ a strategy to select negative instances instead of random sampling. The current strategy is to
-        focus on rank the neg_instances by the elmo similarity between their context and the question, and use stratified
-        sampling with the downsample_strategy_partition
-    downsample_strategy_partition : ``Tuple``, optional (default=(0.05, 0.2, 0.75))
-        The portion of the downsample strategy (if enable_downsample_strategy== True)
     skip_invalid_examples: ``bool``, optional (default=False)
         If this is true, we will skip examples that don't have a gold answer. You should set this to True during
         training, and False any other time.
@@ -486,8 +477,7 @@ class BertJointNQReaderSimple(DatasetReader):
             max_query_length: int = 64,
             skip_invalid_examples: bool = False,
             neg_pos_ratio: int = 1,
-            enable_downsample_strategy=False,
-            downsample_strategy='balanced',
+            downsample_strategy='best',
             vocab_len_location="/home/sunxy-s18/data/nq/vocab.len",
             input_type='example',
             output_type='instance',
@@ -511,8 +501,24 @@ class BertJointNQReaderSimple(DatasetReader):
         self.skip_invalid_examples = skip_invalid_examples
         self.neg_pos_ratio = max(1, int(neg_pos_ratio))  # has to be an integer >= 1
         # ==1 要么本身没有负例，要么只留一个
-        self.enable_downsample_strategy = enable_downsample_strategy
         self.downsample_strategy = downsample_strategy
+
+        if self.downsample_strategy == 'new':
+            if self.keep_all_pos:
+                assert self.keep_all_pos == True
+            self.keep_all_pos = True
+            self.neg_pos_ratio = 1  # not necessary to set this but still we set as 1 in this case
+        else:
+            if self.keep_all_pos:
+                assert self.keep_all_pos == False
+            if self.neg_pos_ratio:
+                assert self.neg_pos_ratio == 3
+            self.keep_all_pos = False
+            self.neg_pos_ratio = 3
+        logger.info(f'Downsampling strategy: {self.downsample_strategy}')
+        logger.info(f'keep_all_pos: {self.keep_all_pos}')
+        logger.info(f'neg_pos_ratio: {self.neg_pos_ratio}')
+
         self.max_query_length = max_query_length
         self.max_entry = max_entry
         self.non_content_type_id = max(
