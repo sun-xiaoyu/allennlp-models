@@ -426,6 +426,17 @@ def passage_sim_score(window_spans, tokenized_doc, doc, question):
     return pos_span, neg_span
 
 
+def overlap(span1, span2):
+    # we assert span1 and span2 are both valid spans:
+    # return not(span1[2] <= span2[1] or span2[2] <= span1[1])
+    if span1[2] <= span2[1] or span2[2] <= span1[1]:
+        return 0
+    else:
+        if span1[1] < span2[1]:
+            return span1[2] - span2[1]
+        else:
+            return span2[2] - span1[1]
+
 @DatasetReader.register("bert_joint_nq_simplified")
 class BertJointNQReaderSimple(DatasetReader):
     """
@@ -499,6 +510,10 @@ class BertJointNQReaderSimple(DatasetReader):
         self.length_limit = length_limit
         self.stride = stride
         self.skip_invalid_examples = skip_invalid_examples
+
+        self.keep_all_pos = keep_all_pos
+        self.allow_ans_type = allow_ans_type
+
         self.neg_pos_ratio = max(1, int(neg_pos_ratio))  # has to be an integer >= 1
         # ==1 要么本身没有负例，要么只留一个
         self.downsample_strategy = downsample_strategy
@@ -509,12 +524,15 @@ class BertJointNQReaderSimple(DatasetReader):
             self.keep_all_pos = True
             self.neg_pos_ratio = 1  # not necessary to set this but still we set as 1 in this case
         else:
-            if self.keep_all_pos:
-                assert self.keep_all_pos == False
-            if self.neg_pos_ratio:
-                assert self.neg_pos_ratio == 3
-            self.keep_all_pos = False
-            self.neg_pos_ratio = 3
+            # if self.keep_all_pos:
+            #     assert self.keep_all_pos == False
+            if not self.neg_pos_ratio:
+                self.neg_pos_ratio = 3
+            elif self.neg_pos_ratio != 3:
+                logger.warning("neg_pos_ratio != 3!!!!!!!!!")
+            #     todo maybe we shoold change back
+            # self.keep_all_pos = False
+
         logger.info(f'Downsampling strategy: {self.downsample_strategy}')
         logger.info(f'keep_all_pos: {self.keep_all_pos}')
         logger.info(f'neg_pos_ratio: {self.neg_pos_ratio}')
@@ -530,8 +548,7 @@ class BertJointNQReaderSimple(DatasetReader):
         self.vocab_len_location = vocab_len_location
         self.input_type = input_type
         self.output_type = output_type
-        self.keep_all_pos = keep_all_pos
-        self.allow_ans_type = allow_ans_type
+
         if self.non_content_type_id < 1:
             self.question_type_id = 0
             self.context_type_id = 0
@@ -555,7 +572,7 @@ class BertJointNQReaderSimple(DatasetReader):
                 self.context_type_id = 0
                 self.non_content_type_id = 1
         logger.info(f'We use standard type_id as in the BERT paper: {self.standard_type_id}')
-        logger.info(f'We use type_id the allennp way: {self.allennlp_type_id}')
+        logger.info(f'We use type_id the allennlp way: {self.allennlp_type_id}')
 
 
         # workaround for a bug in the transformers library
@@ -798,7 +815,7 @@ class BertJointNQReaderSimple(DatasetReader):
                     cnt += 1
         logger.info(f'Instance yielded: {cnt}')
 
-    def select_span_by_strategy(self, pos_span, neg_span, strategy='best'):
+    def select_span_by_strategy(self, pos_span, neg_span, ans_len, strategy='best'):
         if strategy == 'all':
             return [(x[1], x[2]) for x in pos_span + neg_span], 0, 0
         selected = []
@@ -806,16 +823,126 @@ class BertJointNQReaderSimple(DatasetReader):
             if self.keep_all_pos:
                 selected.extend(pos_span)
             else:
-                selected.append(pos_span[0])
+                selected.append(random.sample(pos_span, 1)[0])
         pos_yielded = len(selected)
         if not neg_span:
             selected = [(x[1], x[2]) for x in selected]
             return selected, pos_yielded, 0
         # todo note here neg_pos_ratio is no longer a ratio, it is just the max neg instance per example
         num_neg_to_keep = self.neg_pos_ratio
-        neg_span = [x for x in neg_span if x[1]<x[2]]
+        neg_span = [x for x in neg_span if x[1] < x[2]]  # what the fuck is this?
         if strategy == 'best':
             selected.extend(neg_span[:num_neg_to_keep])
+        elif strategy == 'newbest':
+            negs = [neg_span[0]]
+            for i in range(1, len(neg_span)):
+                for neg in negs:
+                    if overlap(neg, neg_span[i]) > 0:
+                        break
+                else:
+                    negs.append(neg_span[i])
+                if len(negs) >= num_neg_to_keep:
+                    break
+            selected.extend(negs)
+            # print(selected)
+        elif strategy == 'allpos_newbest2':
+            selected = pos_span
+            pos_yielded = len(selected)
+            selected.append(neg_span[0])
+            if pos_yielded == 0:
+                for i in range(1, len(neg_span)):
+                    if overlap(neg_span[0], neg_span[i]) < 130:  # <128 strictly speaking
+                        selected.append(neg_span[i])
+                        break
+            # print(selected)
+        elif strategy == 'really_lastshot':  # allpos + best1 + random1_proba
+            raise NotImplementedError
+            # selected = pos_span
+            # pos_yielded = len(selected)
+            # selected.append(neg_span[0])
+            # if pos_yielded == 0:
+            #     for i in range(1, len(neg_span)):
+            #         if overlap(neg_span[0], neg_span[i]) < 130:  # <128 strictly speaking
+            #             selected.append(neg_span[i])
+            #             break
+        elif strategy == 'allpos_best_1v1':
+            selected = pos_span
+            pos_yielded = len(selected)
+            selected.append(neg_span[0])
+            if pos_yielded == 0 and len(neg_span) > 1 and random.random() < 0.229681636:
+                for i in range(1, len(neg_span)):
+                    if overlap(neg_span[0], neg_span[i]) < 130:  # <128 strictly speaking
+                        selected.append(neg_span[i])
+                        break
+            # print(selected)
+        elif strategy == 'best_of_best':
+            selected = []
+            if len(pos_span) == 1:
+                selected.extend(pos_span)
+            elif len(pos_span) == 2 and ans_len > 128:
+                selected.extend(pos_span)
+            elif len(pos_span) == 2:
+                selected.append(random.sample(pos_span, 1)[0])
+            elif len(pos_span) == 3:
+                if random.random() < 0.5:
+                    selected.append(pos_span[1])
+                else:
+                    selected.append(pos_span[0])
+                    selected.append(pos_span[2])
+            elif len(pos_span) == 4:
+                if random.random() < 0.5:
+                    selected.append(random.sample(pos_span[1:3], 1)[0])
+                elif random.random() < 0.5:
+                    selected.append(pos_span[0])
+                    selected.append(pos_span[2])
+                else:
+                    selected.append(pos_span[1])
+                    selected.append(pos_span[3])
+            pos_yielded = len(selected)
+            selected.append(neg_span[0])
+            if pos_yielded == 0:
+                for i in range(1, len(neg_span)):
+                    if overlap(neg_span[0], neg_span[i]) < 130:  # <128 strictly speaking
+                        selected.append(neg_span[i])
+                        break
+            # print(selected)
+        elif strategy == 'best_of_best_1neg':
+            selected = []
+            if len(pos_span) == 1:
+                selected.extend(pos_span)
+            elif len(pos_span) == 2 and ans_len > 128:
+                selected.extend(pos_span)
+            elif len(pos_span) == 2:
+                selected.append(random.sample(pos_span, 1)[0])
+            elif len(pos_span) == 3:
+                if random.random() < 0.5:
+                    selected.append(pos_span[1])
+                else:
+                    selected.append(pos_span[0])
+                    selected.append(pos_span[2])
+            elif len(pos_span) == 4:
+                if random.random() < 0.5:
+                    selected.append(random.sample(pos_span[1:3], 1)[0])
+                elif random.random() < 0.5:
+                    selected.append(pos_span[0])
+                    selected.append(pos_span[2])
+                else:
+                    selected.append(pos_span[1])
+                    selected.append(pos_span[3])
+            pos_yielded = len(selected)
+            selected.append(neg_span[0])
+        elif strategy == 'best_of_best_for_non_overlapped_data':
+            selected = []
+            if len(pos_span) == 2:
+                selected.append(random.sample(pos_span, 1)[0])
+            else:
+                selected.extend(pos_span)
+            pos_yielded = len(selected)
+            if pos_yielded == 0:
+                selected.append(neg_span[0])
+            else:
+                selected.extend(neg_span[:2])
+
         elif strategy == 'worst':
             selected.extend(neg_span[-num_neg_to_keep:])
         elif len(neg_span) <= num_neg_to_keep:
@@ -851,7 +978,8 @@ class BertJointNQReaderSimple(DatasetReader):
         context = js['context']
         answers = js['answers']
         token_answer_span = js['token_answer_span']
-        selected_spans, p_y, n_y = self.select_span_by_strategy(js['pos_span'], js['neg_span'],
+        token_ans_len = token_answer_span[1] - token_answer_span[0] + 1
+        selected_spans, p_y, n_y = self.select_span_by_strategy(js['pos_span'], js['neg_span'], token_ans_len,
                                                                 strategy=strategy or self.downsample_strategy)
         if self.allow_ans_type:
             if self.allow_ans_type == '01':
@@ -907,6 +1035,7 @@ class BertJointNQReaderSimple(DatasetReader):
         p = 0
         n = 0
         entry_read = 0
+        shuffle_buckets = []
         for path in input_files:
             logger.info("Reading: %s", path)
             with open(path, 'r') as f:
@@ -917,16 +1046,20 @@ class BertJointNQReaderSimple(DatasetReader):
                     instances, p_y, n_y = self.text_entry_js_to_instances(js)
                     p += p_y
                     n += n_y
-                    for instance in instances:
-                        cnt += 1
-                        if self.max_instances and cnt == self.max_instances:
-                            logger.info(f'Instance yielded: {cnt}')
-                            logger.info(f'Pos instance: {p}, neg instance: {n}, cnt: {cnt}, p_y n_y: {p_y} {n_y}')
-                            logger.info(f'entry read: {entry_read}')
-                        yield instance
-                        if self.max_instances and cnt == self.max_instances:
-                            break
                     entry_read += 1
+                    shuffle_buckets.extend(instances)
+                    if len(shuffle_buckets) > 512:
+                        random.shuffle(shuffle_buckets)
+                        for instance in shuffle_buckets:
+                            cnt += 1
+                            if self.max_instances and cnt == self.max_instances:
+                                logger.info(f'Instance yielded: {cnt}')
+                                logger.info(f'[no more accurate] Pos instance: {p}, neg instance: {n}, cnt: {cnt}, p_y n_y: {p_y} {n_y}')
+                                logger.info(f'[no more accurate] entry read: {entry_read}')
+                            yield instance
+                            if self.max_instances and cnt == self.max_instances:
+                                break
+                        shuffle_buckets = []
                     if self.max_instances and cnt == self.max_instances:
                         break
                     if self.max_entry and entry_read > self.max_entry:
