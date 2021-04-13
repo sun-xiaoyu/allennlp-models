@@ -21,8 +21,25 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 DEBUGGGGGGGGGG = False
-CUDA_DEVICE = 0
+CUDA_DEVICE = 1
 YN_TYPE_DICT = {2: 'NONE', 3: 'YES', 4: 'NO'}
+
+def run_official_eval(name):
+    prediction_path = f'/home/sunxy-s18/data/nq/official_predictions_new_{name}_yesno'
+    print(prediction_path)
+    if not os.path.exists(prediction_path):
+        logger.warning(prediction_path + ' Not Exist!')
+        return
+    output_path = f'/home/sunxy-s18/std/official/{name}.json'
+    if os.path.exists(output_path):
+        logger.warning(output_path + ' Already Exist!')
+        return
+    cmd = f'python /home/sunxy-s18/std/natural-questions/nq_eval.py --gold_path=/home/sunxy-s18/data/nq/dev.jsonl.gz ' \
+          f'--predictions_path={prediction_path}' \
+          f' > {output_path}'
+    print(cmd)
+    os.system(cmd)
+    logger.info('Official eval sucessfuly run!')
 
 
 class Processor(object):
@@ -208,7 +225,7 @@ def no_ans_nq_eval(id):
 
 
 class NqProcessor(Processor):
-    def __init__(self, model_path, predict_yesno = True):
+    def __init__(self, model_path, predict_yesno = True, must_have_ans=False):
         super().__init__(model_path)
         self.predictor = None
         # self.dev_data_path = '/home/sunxy-s18/data/nq/v1.0-nq-dev-all.jsonl'
@@ -219,12 +236,16 @@ class NqProcessor(Processor):
         self.official_prediction_path = f'/home/sunxy-s18/data/nq/official_predictions_new_{self.model_name}'
         # length of results: 7673
         self.predict_yesno = predict_yesno
+        # self.must_have_ans = must_have_ans
         self.yn_processor = None
         self.yesno_predictor_path = '/home/sunxy-s18/data/yesno_0321'
         self.id = 0
         if self.predict_yesno:
             self.prediction_output_path = self.prediction_output_path[:-6] + '_yesno.jsonl'
             self.official_prediction_path = self.official_prediction_path + '_yesno'
+            # if self.must_have_ans:
+            #     self.prediction_output_path = self.prediction_output_path[:-6] + '_musthaveans.jsonl'
+            #     self.official_prediction_path = self.official_prediction_path + '_musthaveans'
             logger.info(f"Actually, prediction output path will be: {self.prediction_output_path}")
 
 
@@ -316,6 +337,8 @@ class NqProcessor(Processor):
                'answers': entry['answers'],
                'ans_type_gold': make_nq_answer(entry['answers'][0]['answer_type'])}
         # res.update(self.predictor.predict_json(entry))
+        # if self.must_have_ans:
+        #     textentry['must_have_ans'] = True
         res.update(self.predictor.predict_one_text_entry(textentry))
         res['ans_type_pred'] = int(res['best_span_str'] != '')
         yesno = 'NONE'
@@ -323,8 +346,14 @@ class NqProcessor(Processor):
             yesno = self.yn_processor.predict_yn(res['question_text'], res['best_span_str'])
         res['nq_eval'] = compute_predictions(js["long_answer_candidates"],
                                              entry["token_map"], res, yesno=yesno)
-
         return res
+
+    def after_training(self):
+        self.predict_and_process(overwrite=False)
+        self.confusion()
+        self.save_official_prediction()
+        run_official_eval(self.model_name)
+
 
 
 
@@ -424,5 +453,3 @@ class QatypeProcessor(Processor):
             self.predictor = QatypePredictor.from_path(self.model_path,
                                                        predictor_name='qatype',
                                                        cuda_device=CUDA_DEVICE)
-
-
