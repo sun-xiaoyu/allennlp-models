@@ -99,7 +99,7 @@ class BertJointNQMulti(Model):
         #     if self.option == 'default_pooler':
         #         self.pooler = BertPooler(pretrained_model=transformer_model_name, )
 
-
+        self.musthaveans = False
         self._sa_start_accuracy = CategoricalAccuracy()
         self._sa_end_accuracy = CategoricalAccuracy()
         self._sa_span_accuracy = BooleanAccuracy()
@@ -223,6 +223,7 @@ class BertJointNQMulti(Model):
             possible_answer_mask[i, start: end + 1] = True
             # Also unmask the [CLS] token since that token is used to indicate that
             # the question is impossible.
+            # if metadata is None or not self.musthaveans:
             possible_answer_mask[i, 0] = True
 
         # Replace the masked values with a very negative constant since we're in log-space.
@@ -291,7 +292,8 @@ class BertJointNQMulti(Model):
 
         type_probs = torch.nn.functional.softmax(type_logits, dim=-1)
         argmax_indices = torch.argmax(type_probs, dim=-1)
-        ls_choice = torch.argmax(type_probs[:,1:3], dim=-1).unsqueeze(1)
+        # ls_choice = torch.argmax(type_probs[:,1:3], dim=-1).unsqueeze(1)
+        ls_choice = answer_type.clamp(min=1, max=2).unsqueeze(1) - 1
         output_dict['answer_type_logits'] = type_logits
         output_dict["answer_type_probs"] = type_probs
         output_dict["ans_type_pred_cls"] = argmax_indices
@@ -332,10 +334,13 @@ class BertJointNQMulti(Model):
             self._span_accuracy(
                 best_spans, answer_span,  # span_mask.unsqueeze(-1).expand_as(best_sa_spans)
             )
-            sa_loss = cross_entropy(sa_start_logits, sa_start, reduce=False) + \
-                      cross_entropy(sa_end_logits, sa_end, reduce=False)
-            la_loss = cross_entropy(la_start_logits, la_start, reduce=False) + \
-                      cross_entropy(la_end_logits, la_end, reduce=False)
+            ignored = -100
+            # if metadata is not None or self.musthaveans:
+            #     ignored = 0
+            sa_loss = cross_entropy(sa_start_logits, sa_start, reduction='none', ignore_index=ignored) + \
+                      cross_entropy(sa_end_logits, sa_end, reduction='none', ignore_index=ignored)
+            la_loss = cross_entropy(la_start_logits, la_start, reduction='none', ignore_index=ignored) + \
+                      cross_entropy(la_end_logits, la_end, reduction='none', ignore_index=ignored)
             l_and_s_loss = torch.cat([sa_loss.unsqueeze(1), la_loss.unsqueeze(1)], dim=-1)
             l_or_s_loss = torch.mean(torch.gather(l_and_s_loss, 1, ls_choice).squeeze(1))
             if torch.any(sa_loss > 1e9) or torch.any(la_loss > 1e9):

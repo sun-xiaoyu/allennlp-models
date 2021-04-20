@@ -91,7 +91,7 @@ class BertJointNQ(Model):
             if classifier_feedforward:
                 self.classifier_feedforward = classifier_feedforward
                 logger.warning('We are using fine-tuned model!')
-                logger.info(classifier_feedforward)
+                logger.info(str(classifier_feedforward))
             else:
                 self.classifier_feedforward = FeedForward(input_dim=output_dim, num_layers=1, hidden_dims=[5],
                                                  activations=[Activation.by_name("linear")()])
@@ -137,6 +137,8 @@ class BertJointNQ(Model):
         self.no_type_loss = self.option == 'no_type_loss'
         logger.info(f'No type_loss**: {self.no_type_loss}')
         logger.info(f'We use model architecture as: {self.option}')
+
+        self.must_have_ans = False
 
 
     def forward(  # type: ignore
@@ -237,6 +239,10 @@ class BertJointNQ(Model):
             # Also unmask the [CLS] token since that token is used to indicate that
             # the question is impossible.
             possible_answer_mask[i, 0] = True
+            if self.must_have_ans:
+                possible_answer_mask[i, 0] = False
+
+        no_ans_score = span_start_logits[:,0].unsqueeze(1) + span_end_logits[:,0].unsqueeze(1)
 
         # Replace the masked values with a very negative constant since we're in log-space.
         # shape: (batch_size, sequence_length)
@@ -256,18 +262,20 @@ class BertJointNQ(Model):
         # shape: (batch_size,)
         best_span_scores = torch.gather(
             span_start_logits, 1, best_spans[:, 0].unsqueeze(1)
-        ) + torch.gather(span_end_logits, 1, best_spans[:, 1].unsqueeze(1)) - \
-                           span_start_logits[:,0].unsqueeze(1)- span_end_logits[:,0].unsqueeze(1)
+        ) + torch.gather(span_end_logits, 1, best_spans[:, 1].unsqueeze(1)) - no_ans_score
+                           # span_start_logits[:,0].unsqueeze(1)- span_end_logits[:,0].unsqueeze(1)
         best_span_scores = best_span_scores.squeeze(1)
         bert_cls_vec = embedded_question[:, 0, :]
-        output_dict = {
-            # "span_start_logits": span_start_logits,
-            # "span_start_probs": span_start_probs,
-            # "span_end_logits": span_end_logits,
-            # "span_end_probs": span_end_probs,
-            "best_span": best_spans,
-            "best_span_scores": best_span_scores,
-        }
+        # output_dict = {
+        #     "span_start_logits": span_start_logits,
+        #     # "span_start_probs": span_start_probs,
+        #     "span_end_logits": span_end_logits,
+        #     # "span_end_probs": span_end_probs,
+        # }
+        output_dict = {}
+        output_dict['best_span'] = best_spans
+        output_dict["best_span_scores"] = best_span_scores
+
 
         # get extra feature here
         if not self.no_type_loss:
@@ -341,14 +349,17 @@ class BertJointNQ(Model):
                 best_spans, answer_span,  # span_mask.unsqueeze(-1).expand_as(best_spans)
             )
 
-            start_loss = cross_entropy(span_start_logits, span_start, )  # ignore_index=-1)
+            ignored_index = -100
+            if self.must_have_ans:
+                ignored_index = 0
+            start_loss = cross_entropy(span_start_logits, span_start, ignore_index=ignored_index)  # ignore_index=-1)
             if torch.any(start_loss > 1e9):
                 logger.critical("Start loss too high (%r)", start_loss)
                 logger.critical("span_start_logits: %r", span_start_logits)
                 logger.critical("span_start: %r", span_start)
                 assert False
 
-            end_loss = cross_entropy(span_end_logits, span_end, )  # ignore_index=-1)
+            end_loss = cross_entropy(span_end_logits, span_end, ignore_index=ignored_index)  # ignore_index=-1)
             if torch.any(end_loss > 1e9):
                 logger.critical("End loss too high (%r)", end_loss)
                 logger.critical("span_end_logits: %r", span_end_logits)

@@ -21,6 +21,9 @@ class NQPredictor(Predictor):
         super(NQPredictor, self).__init__(model, dataset_reader)
         # self._next_qid = 0
 
+    def set_raw(self, raw):
+        self.raw_prediction = raw
+
     def predict(self, question: str, passage: str) -> JsonDict:
         """
         Make a machine comprehension prediction on the supplied input.
@@ -74,6 +77,9 @@ class NQPredictor(Predictor):
         # self._next_qid += 1
         return result
 
+    def set_model_must_have_ans(self):
+        self._model.must_have_ans = True
+
     @overrides
     def _batch_json_to_instances(self, json_dicts: List[JsonDict]) -> List[Instance]:
         instances = []
@@ -107,6 +113,10 @@ class NQPredictor(Predictor):
                 res = self._model.forward_on_instances(batch_ins)
                 outputs.extend(res)
                 batch_start += batch_size
+
+        if self.raw_prediction:
+            print("Raw prediction! we don't try to avoid no-answer")
+            return [sanitize(outputs[0])]
 
         # scores = [x['best_span_scores'] for x in outputs]
         outputs.sort(key=lambda x:x['best_span_scores'], reverse=True)

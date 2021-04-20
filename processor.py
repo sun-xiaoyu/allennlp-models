@@ -21,16 +21,22 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 DEBUGGGGGGGGGG = False
-CUDA_DEVICE = 1
+CUDA_DEVICE = 2
 YN_TYPE_DICT = {2: 'NONE', 3: 'YES', 4: 'NO'}
 
-def run_official_eval(name):
-    prediction_path = f'/home/sunxy-s18/data/nq/official_predictions_new_{name}_yesno'
+def run_official_eval(name, path=None):
+    if path:
+        prediction_path = path
+    else:
+        prediction_path = f'/home/sunxy-s18/data/nq/official_predictions_new_{name}_yesno'
     print(prediction_path)
     if not os.path.exists(prediction_path):
         logger.warning(prediction_path + ' Not Exist!')
         return
-    output_path = f'/home/sunxy-s18/std/official/{name}.json'
+    if 'raw' in prediction_path:
+        output_path = f'/home/sunxy-s18/std/official/{name}_raw.json'
+    else:
+        output_path = f'/home/sunxy-s18/std/official/{name}.json'
     if os.path.exists(output_path):
         logger.warning(output_path + ' Already Exist!')
         return
@@ -53,7 +59,7 @@ class Processor(object):
                 b 调用官网 nq_eval 得到官方分数。
     """
 
-    def __init__(self, model_path):
+    def __init__(self, model_path, cuda_device):
         prefix = '/home/sunxy-s18/data/'
         assert model_path.startswith(prefix)
         self.model_path = model_path
@@ -64,6 +70,7 @@ class Processor(object):
         logger.info(f"Predition output path will be: {self.prediction_output_path}")
         self.dev_data_path = ''
         self.results = None
+        self.cuda_device = cuda_device
 
     def predict_and_process(self, data_path=None, overwrite=False, unique_id=None):
         if data_path is None:
@@ -112,8 +119,8 @@ class Processor(object):
 
 
 class SquadProcessor(Processor):
-    def __init__(self, model_path):
-        super().__init__(model_path)
+    def __init__(self, model_path, cuda_device=CUDA_DEVICE):
+        super().__init__(model_path, cuda_device)
         self.predictor = None
         self.dev_data_path = '/home/sunxy-s18/data/squad2.0/dev-v2.0.json'
 
@@ -123,7 +130,7 @@ class SquadProcessor(Processor):
         if not self.predictor:
             self.predictor = TransformerQAPredictor.from_path(self.model_path,
                                                               predictor_name='transformer_qa',
-                                                              cuda_device=CUDA_DEVICE)
+                                                              cuda_device=self.cuda_device)
         with open(data_path, 'r') as f:
             dataset_json = json.load(f)
             dataset = dataset_json["data"]
@@ -143,7 +150,7 @@ class SquadProcessor(Processor):
         return results
 
 
-def compute_predictions(candidates, token_map, result, yesno:str = "NONE"):
+def compute_predictions(candidates, token_map, result, yesno:str = "NONE", raw=False):
     """Converts an example into an NQEval object for evaluation."""
     # 从来自多个窗口的候选span中排序打分，得出最好的short span，并且从list中找到包含他的long span
     # 这里的start end的选择是从整篇文章中来的。 而我自己的做法是，每个window选出一个最好的start,end 然后window之间比较    predictions = []
@@ -171,9 +178,9 @@ def compute_predictions(candidates, token_map, result, yesno:str = "NONE"):
                 end = short_span[1]
                 if c["top_level"] and c["start_token"] <= start and c["end_token"] >= end:
                     long_span = c["start_token"], c["end_token"]
-                    if long_span[0] == short_span[0] - 1 and long_span[1] == short_span[1] + 1:
+                    if raw == False and long_span[0] == short_span[0] - 1 and long_span[1] == short_span[1] + 1:
                         short_span = -1, -1
-                        # print("it's working")
+                        print("it's working")
                     assert long_span[0] < long_span[1], (long_span[0], long_span[1])
                     break
     if yesno != 'NONE':
@@ -225,8 +232,9 @@ def no_ans_nq_eval(id):
 
 
 class NqProcessor(Processor):
-    def __init__(self, model_path, predict_yesno = True, must_have_ans=False):
-        super().__init__(model_path)
+    def __init__(self, model_path, predict_yesno=True, must_have_ans=False,
+                 raw_prediction=False, cuda_device=CUDA_DEVICE):
+        super().__init__(model_path, cuda_device)
         self.predictor = None
         # self.dev_data_path = '/home/sunxy-s18/data/nq/v1.0-nq-dev-all.jsonl'
         self.dev_data_path = '/home/sunxy-s18/data/nq/simplified_nq_dev_all_7830.jsonl'
@@ -235,29 +243,30 @@ class NqProcessor(Processor):
         # Don't predict noanswer unless noanswer in every window
         self.official_prediction_path = f'/home/sunxy-s18/data/nq/official_predictions_new_{self.model_name}'
         # length of results: 7673
+        if raw_prediction:
+            predict_yesno = False
+            must_have_ans = False
+            self.prediction_output_path = self.prediction_output_path[:-6] + '_raw.jsonl'
+            self.official_prediction_path = f'/home/sunxy-s18/data/nq/official_predictions_new_{self.model_name}_raw'
+        self.raw_prediction = raw_prediction
         self.predict_yesno = predict_yesno
-        # self.must_have_ans = must_have_ans
+        self.must_have_ans = must_have_ans
         self.yn_processor = None
         self.yesno_predictor_path = '/home/sunxy-s18/data/yesno_0321'
         self.id = 0
         if self.predict_yesno:
             self.prediction_output_path = self.prediction_output_path[:-6] + '_yesno.jsonl'
             self.official_prediction_path = self.official_prediction_path + '_yesno'
-            # if self.must_have_ans:
-            #     self.prediction_output_path = self.prediction_output_path[:-6] + '_musthaveans.jsonl'
-            #     self.official_prediction_path = self.official_prediction_path + '_musthaveans'
+        if self.must_have_ans:
+            self.prediction_output_path = self.prediction_output_path[:-6] + '_musthaveans.jsonl'
+            self.official_prediction_path = self.official_prediction_path + '_musthaveans'
             logger.info(f"Actually, prediction output path will be: {self.prediction_output_path}")
+
 
 
     def generate_prediction_from_data(self, data_path, unique_id=None, debug=False):
         if not debug:
-            if not self.predictor:
-                self.predictor = NQPredictor.from_path(self.model_path, predictor_name='nq',
-                                                       cuda_device=CUDA_DEVICE)
-            if self.predict_yesno:
-                if not self.yn_processor:
-                    self.yn_processor = QatypeProcessor(self.yesno_predictor_path)
-                    self.yn_processor.load()
+            self.load()
         results = []
         logger.info("Reading: %s", data_path)
 
@@ -291,6 +300,10 @@ class NqProcessor(Processor):
             "contexts": html,
         }
         res = self.predictor.predict_json(entry)
+        if self.predict_yesno:
+            yn_ans, yn_probs = self.yn_processor.predict_yn_with_probs(entry['question_text'], res['best_span_str'])
+            res['yn_ans'] = yn_ans
+            res['yn_probs'] = yn_probs
         self.id += 1
         return res
         # return "predict_one_output"
@@ -309,11 +322,15 @@ class NqProcessor(Processor):
     def load(self):
         if not self.predictor:
             self.predictor = NQPredictor.from_path(self.model_path, predictor_name='nq',
-                                                   cuda_device=CUDA_DEVICE)
+                                                   cuda_device=self.cuda_device)
+            self.predictor.set_raw(self.raw_prediction)
+            if self.must_have_ans:
+                self.predictor.set_model_must_have_ans()
         if self.predict_yesno:
             if not self.yn_processor:
-                self.yn_processor = QatypeProcessor(self.yesno_predictor_path)
+                self.yn_processor = QatypeProcessor(self.yesno_predictor_path, cuda_device=self.cuda_device)
                 self.yn_processor.load()
+
 
     def process_one(self, line, textentry):
         js = json.loads(line.strip('\n'))
@@ -340,19 +357,99 @@ class NqProcessor(Processor):
         # if self.must_have_ans:
         #     textentry['must_have_ans'] = True
         res.update(self.predictor.predict_one_text_entry(textentry))
+        if self.must_have_ans and res['best_span_str'] == '':
+            print('wtf')
+            pass
         res['ans_type_pred'] = int(res['best_span_str'] != '')
         yesno = 'NONE'
         if self.predict_yesno:
+            print('wtf')
             yesno = self.yn_processor.predict_yn(res['question_text'], res['best_span_str'])
         res['nq_eval'] = compute_predictions(js["long_answer_candidates"],
-                                             entry["token_map"], res, yesno=yesno)
+                                             entry["token_map"], res, yesno=yesno, raw=self.raw_prediction)
         return res
 
     def after_training(self):
         self.predict_and_process(overwrite=False)
         self.confusion()
         self.save_official_prediction()
-        run_official_eval(self.model_name)
+        run_official_eval(self.model_name, path=self.official_prediction_path)
+
+    def must_have_ans_acc(self):
+        """Scores a long answer as correct or not.
+
+        1) First decide if there is a gold long answer with LONG_NO_NULL_THRESHOLD.
+        2) The prediction will get a match if:
+           a. There is a gold long answer.
+           b. The prediction span match exactly with *one* of the non-null gold
+              long answer span.
+
+        Args:
+          gold_label_list: A list of NQLabel, could be None.
+          pred_label: A single NQLabel, could be None.
+
+        Returns:
+          gold_has_answer, pred_has_answer, is_correct, score
+        """
+        def non_null_span(span):
+            return span['start_token'] != -1
+
+        def match_span(a, b):
+            return a['start_token'] == b['start_token'] and a['end_token'] == b['end_token']
+
+        def non_null_sa_by_anno(anno):
+            return anno['yes_no_answer'] != 'NONE' or len(anno['short_answers']) > 0
+
+        total_la = 0
+        correct_la = 0
+        total_sa = 0
+        correct_sa = 0
+        with open(self.dev_data_path, 'r') as f:
+            for i, line in enumerate(f):
+                js = json.loads(line)
+                annos = js['annotations']
+                las = [anno['long_answer'] for anno in annos]
+                # sas = [anno['short_answers'] for anno in annos]
+
+                sa_pred = self.results[i]['nq_eval']['short_answers'][0]
+                la_pred = self.results[i]['nq_eval']['long_answer']
+                yn_pred = self.results[i]['nq_eval']['yes_no_answer']
+
+                # if not non_null_span(sa_pred) and yn_pred == 'NONE':
+                #     print('wtf?')
+                #     assert False
+
+                assert self.results[i]['id'] == js['example_id']
+
+                if sum([non_null_span(x) for x in las]) > 2:
+                    # has_la = True
+                    total_la += 1
+                    if non_null_span(la_pred):
+                        for la in las:
+                            if match_span(la_pred, la):
+                                correct_la += 1
+                                break
+
+                if sum([non_null_sa_by_anno(x) for x in annos]) > 2:
+                    # has_sa = True
+                    total_sa += 1
+                    if non_null_span(sa_pred):
+                        for anno in annos:
+                            if len(anno['short_answers']) == 1 and match_span(sa_pred, anno['short_answers'][0]):
+                                correct_sa += 1
+                                break
+                    elif yn_pred != 'NONE':
+                        for anno in annos:
+                            if anno['yes_no_answer'] == yn_pred:
+                                correct_sa += 1
+                                break
+
+                if i+1 == len(self.results):
+                    break
+
+        print(f'SA must-have-ans acc: {correct_sa, total_sa, correct_sa/total_sa}')
+        print(f'LA must-have-ans acc: {correct_la, total_la, correct_la / total_la}')
+        pass
 
 
 
@@ -365,8 +462,8 @@ def _open(file_path):
 
 
 class QatypeProcessor(Processor):
-    def __init__(self, model_path):
-        super().__init__(model_path)
+    def __init__(self, model_path, cuda_device=CUDA_DEVICE):
+        super().__init__(model_path, cuda_device)
         self.predictor = None
         self.dev_data_path = '/home/sunxy-s18/data/nq/qatype_dev.jsonl'
         if 'yesno' in model_path:
@@ -381,7 +478,7 @@ class QatypeProcessor(Processor):
         if not self.predictor:
             self.predictor = QatypePredictor.from_path(self.model_path,
                                                             predictor_name='qatype',
-                                                            cuda_device=CUDA_DEVICE)
+                                                            cuda_device=self.cuda_device)
         with open(data_path, 'r') as f:
             dataset_json = json.load(f)
             dataset = dataset_json["data"]
@@ -407,7 +504,7 @@ class QatypeProcessor(Processor):
                 results.append(res)
                 # if len(results) > 500:
                 #     break
-                if unique_id and len(results) > unique_id:
+                if unique_id and len(results) >= unique_id:
                     break
 
         logger.info(f'length of results: {len(results)}')
@@ -441,15 +538,17 @@ class QatypeProcessor(Processor):
         print(max_accuracy, max_accuracy_threshold, min_acc)
 
     def predict_yn(self, question, answer):
-        if not self.predictor:
-            self.predictor = QatypePredictor.from_path(self.model_path,
-                                                            predictor_name='qatype',
-                                                            cuda_device=CUDA_DEVICE)
+        self.load()
         res = self.predictor.predict_qa(question, answer)
         return YN_TYPE_DICT[int(res["label"])]
+
+    def predict_yn_with_probs(self, question, answer):
+        self.load()
+        res = self.predictor.predict_qa(question, answer)
+        return YN_TYPE_DICT[int(res["label"])], res["probs"]
 
     def load(self):
         if not self.predictor:
             self.predictor = QatypePredictor.from_path(self.model_path,
                                                        predictor_name='qatype',
-                                                       cuda_device=CUDA_DEVICE)
+                                                       cuda_device=self.cuda_device)
