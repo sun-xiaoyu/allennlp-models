@@ -19,10 +19,11 @@ class NQPredictor(Predictor):
 
     def __init__(self, model: Model, dataset_reader: DatasetReader) -> None:
         super(NQPredictor, self).__init__(model, dataset_reader)
+        self.prefer_none_null_window_ans = True
         # self._next_qid = 0
 
-    def set_raw(self, raw):
-        self.raw_prediction = raw
+    def set_prefer_none_null_window_ans(self, prefer):
+        self.prefer_none_null_window_ans = prefer
 
     def predict(self, question: str, passage: str) -> JsonDict:
         """
@@ -114,10 +115,9 @@ class NQPredictor(Predictor):
                 outputs.extend(res)
                 batch_start += batch_size
 
-        if self.raw_prediction:
-            print("Raw prediction! we don't try to avoid no-answer")
+        if not self.prefer_none_null_window_ans:
             return [sanitize(outputs[0])]
-
+        print("with no_ans fix")
         # scores = [x['best_span_scores'] for x in outputs]
         outputs.sort(key=lambda x:x['best_span_scores'], reverse=True)
         for output in outputs:

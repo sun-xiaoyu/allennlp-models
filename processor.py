@@ -33,8 +33,10 @@ def run_official_eval(name, path=None):
     if not os.path.exists(prediction_path):
         logger.warning(prediction_path + ' Not Exist!')
         return
-    if 'raw' in prediction_path:
-        output_path = f'/home/sunxy-s18/std/official/{name}_raw.json'
+    # if 'raw' in prediction_path:
+    #     output_path = f'/home/sunxy-s18/std/official/{name}_raw.json'
+    if path:
+        output_path = f'/home/sunxy-s18/std/official/{path[49:]}.json'
     else:
         output_path = f'/home/sunxy-s18/std/official/{name}.json'
     if os.path.exists(output_path):
@@ -150,7 +152,7 @@ class SquadProcessor(Processor):
         return results
 
 
-def compute_predictions(candidates, token_map, result, yesno:str = "NONE", raw=False):
+def compute_predictions(candidates, token_map, result, yesno:str = "NONE", long_ans_fix=True):
     """Converts an example into an NQEval object for evaluation."""
     # 从来自多个窗口的候选span中排序打分，得出最好的short span，并且从list中找到包含他的long span
     # 这里的start end的选择是从整篇文章中来的。 而我自己的做法是，每个window选出一个最好的start,end 然后window之间比较    predictions = []
@@ -178,9 +180,9 @@ def compute_predictions(candidates, token_map, result, yesno:str = "NONE", raw=F
                 end = short_span[1]
                 if c["top_level"] and c["start_token"] <= start and c["end_token"] >= end:
                     long_span = c["start_token"], c["end_token"]
-                    if raw == False and long_span[0] == short_span[0] - 1 and long_span[1] == short_span[1] + 1:
+                    if long_ans_fix and long_span[0] == short_span[0] - 1 and long_span[1] == short_span[1] + 1:
                         short_span = -1, -1
-                        print("it's working")
+                        print("with long_ans fix")
                     assert long_span[0] < long_span[1], (long_span[0], long_span[1])
                     break
     if yesno != 'NONE':
@@ -233,7 +235,7 @@ def no_ans_nq_eval(id):
 
 class NqProcessor(Processor):
     def __init__(self, model_path, predict_yesno=True, must_have_ans=False,
-                 raw_prediction=False, cuda_device=CUDA_DEVICE):
+                 raw_prediction='not_raw', cuda_device=CUDA_DEVICE):
         super().__init__(model_path, cuda_device)
         self.predictor = None
         # self.dev_data_path = '/home/sunxy-s18/data/nq/v1.0-nq-dev-all.jsonl'
@@ -243,20 +245,37 @@ class NqProcessor(Processor):
         # Don't predict noanswer unless noanswer in every window
         self.official_prediction_path = f'/home/sunxy-s18/data/nq/official_predictions_new_{self.model_name}'
         # length of results: 7673
+        '''
+        not_raw: all of them
+        raw: none of them
+        no_yn
+        no_long
+        no_noans
+        '''
         if raw_prediction:
-            predict_yesno = False
             must_have_ans = False
-            self.prediction_output_path = self.prediction_output_path[:-6] + '_raw.jsonl'
-            self.official_prediction_path = f'/home/sunxy-s18/data/nq/official_predictions_new_{self.model_name}_raw'
+            self.prediction_output_path = self.prediction_output_path[:-6] + f'_{raw_prediction}.jsonl'
+            self.official_prediction_path = f'/home/sunxy-s18/data/nq/' \
+                                            f'official_predictions_new_{self.model_name}_{raw_prediction}'
+            self.long_ans_fix = True
+            self.yn_ans_fix = True
+            self.no_ans_fix = True
+            if raw_prediction in ['raw', 'no_long']:
+                self.long_ans_fix = False
+            if raw_prediction in ['raw', 'no_noans']:
+                self.no_ans_fix = False
+            if raw_prediction in ['raw', 'no_yn']:
+                self.yn_ans_fix = False
+        logger.info(f'@@@@@@@@@ long yn no:{self.long_ans_fix, self.yn_ans_fix, self.no_ans_fix}@@@@@@@@@@@@')
         self.raw_prediction = raw_prediction
         self.predict_yesno = predict_yesno
         self.must_have_ans = must_have_ans
         self.yn_processor = None
         self.yesno_predictor_path = '/home/sunxy-s18/data/yesno_0321'
         self.id = 0
-        if self.predict_yesno:
-            self.prediction_output_path = self.prediction_output_path[:-6] + '_yesno.jsonl'
-            self.official_prediction_path = self.official_prediction_path + '_yesno'
+        # if self.predict_yesno:
+        #     self.prediction_output_path = self.prediction_output_path[:-6] + '_yesno.jsonl'
+        #     self.official_prediction_path = self.official_prediction_path + '_yesno'
         if self.must_have_ans:
             self.prediction_output_path = self.prediction_output_path[:-6] + '_musthaveans.jsonl'
             self.official_prediction_path = self.official_prediction_path + '_musthaveans'
@@ -300,7 +319,7 @@ class NqProcessor(Processor):
             "contexts": html,
         }
         res = self.predictor.predict_json(entry)
-        if self.predict_yesno:
+        if self.yn_ans_fix:
             yn_ans, yn_probs = self.yn_processor.predict_yn_with_probs(entry['question_text'], res['best_span_str'])
             res['yn_ans'] = yn_ans
             res['yn_probs'] = yn_probs
@@ -323,10 +342,11 @@ class NqProcessor(Processor):
         if not self.predictor:
             self.predictor = NQPredictor.from_path(self.model_path, predictor_name='nq',
                                                    cuda_device=self.cuda_device)
-            self.predictor.set_raw(self.raw_prediction)
+            if not self.no_ans_fix:
+                self.predictor.set_prefer_none_null_window_ans(False)
             if self.must_have_ans:
                 self.predictor.set_model_must_have_ans()
-        if self.predict_yesno:
+        if self.yn_ans_fix:
             if not self.yn_processor:
                 self.yn_processor = QatypeProcessor(self.yesno_predictor_path, cuda_device=self.cuda_device)
                 self.yn_processor.load()
@@ -362,11 +382,12 @@ class NqProcessor(Processor):
             pass
         res['ans_type_pred'] = int(res['best_span_str'] != '')
         yesno = 'NONE'
-        if self.predict_yesno:
-            print('wtf')
+        if self.yn_ans_fix:
+            print('with yn_ans fix')
             yesno = self.yn_processor.predict_yn(res['question_text'], res['best_span_str'])
+
         res['nq_eval'] = compute_predictions(js["long_answer_candidates"],
-                                             entry["token_map"], res, yesno=yesno, raw=self.raw_prediction)
+                                             entry["token_map"], res, yesno=yesno, long_ans_fix=self.long_ans_fix)
         return res
 
     def after_training(self):

@@ -390,7 +390,7 @@ tags_to_keep = ["<Table>", "<P>", "<Ul>", "<Dl>", "<Ol>", "<Tr>", "<Li>", "<Dd>"
 _HTML_TOKENS_RE = re.compile(r"^<[^ ]*>$", re.UNICODE)
 TextSpan = collections.namedtuple("TextSpan", "token_positions text")
 # TODO change here, can be moved into config or add number
-NQ_SPECIAL_TOKEN = ['[Table]', '[Paragraph]', '[List]', '[Other]']
+NQ_SPECIAL_TOKEN = ['[Table]', '[Paragraph]', '[List]', '[Other]'] + ['[h2]']
 
 
 # if __name__ == '__main__':
